@@ -1,0 +1,223 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1786385937691,
+      "tag": "0000_furry_boom_boom",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786386210286,
+      "tag": "0001_urmed_seed_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786386210287,
+      "tag": "0002_urmed_seed_products_000001_005000",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786386210288,
+      "tag": "0003_urmed_seed_products_005001_010000",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786386210289,
+      "tag": "0004_urmed_seed_products_010001_015000",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786386210290,
+      "tag": "0005_urmed_seed_products_015001_020000",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786386210291,
+      "tag": "0006_urmed_seed_products_020001_025000",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786386210292,
+      "tag": "0007_urmed_seed_products_025001_030000",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786386210293,
+      "tag": "0008_urmed_seed_products_030001_035000",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1786386210294,
+      "tag": "0009_urmed_seed_products_035001_040000",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786386210295,
+      "tag": "0010_urmed_seed_products_040001_045000",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786386210296,
+      "tag": "0011_urmed_seed_products_045001_050000",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786386210297,
+      "tag": "0012_urmed_seed_products_050001_055000",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1786386210298,
+      "tag": "0013_urmed_seed_products_055001_060000",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1786386210299,
+      "tag": "0014_urmed_seed_products_060001_065000",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1786386210300,
+      "tag": "0015_urmed_seed_products_065001_070000",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1786386210301,
+      "tag": "0016_urmed_seed_products_070001_075000",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1786386210302,
+      "tag": "0017_urmed_seed_products_075001_080000",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1786386210303,
+      "tag": "0018_urmed_seed_products_080001_085000",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1786386210304,
+      "tag": "0019_urmed_seed_products_085001_090000",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1786386210305,
+      "tag": "0020_urmed_seed_products_090001_095000",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1786386210306,
+      "tag": "0021_urmed_seed_products_095001_100000",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1786386210307,
+      "tag": "0022_urmed_seed_products_100001_100041",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1786386210308,
+      "tag": "0023_activate_marketplace",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1786434752269,
+      "tag": "0024_public_lilith",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1786435730911,
+      "tag": "0025_known_namorita",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1786439155837,
+      "tag": "0026_atomic_fefo_sales",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1786440884489,
+      "tag": "0027_volatile_carmella_unuscione",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1786443744962,
+      "tag": "0028_mature_namorita",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1786445998158,
+      "tag": "0029_petite_sprite",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1786458000000,
+      "tag": "0030_harden_runtime_integrity",
+      "breakpoints": true
+    }
+  ]
+}
