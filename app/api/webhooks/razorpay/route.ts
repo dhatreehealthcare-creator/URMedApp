@@ -1,5 +1,6 @@
 import { getD1 } from "../../../../db/d1";
 import { errorResponse } from "../../../../lib/auth-server";
+import { captureOnlineOrderPayment, InventoryReservationError } from "../../../../lib/inventory-reservations";
 import { getRequiredRuntimeValue } from "../../../../lib/runtime-env";
 import { constantTimeEqual, hmacHex, sha256Hex } from "../../../../lib/signatures";
 
@@ -24,14 +25,18 @@ export async function POST(request: Request) {
       .bind(providerEventId, order?.id ?? null, eventType, await sha256Hex(raw)).run();
     if(!inserted.meta.changes)return Response.json({received:true,duplicate:true});
     if (order && (eventType === "payment.captured" || payment?.status === "captured")) {
-      await db.batch([
-        db.prepare(`UPDATE orders SET payment_status='paid',razorpay_payment_id=?,
-          order_status=CASE WHEN order_status='awaiting_payment' THEN 'placed' ELSE order_status END,
-          delivery_status=CASE WHEN order_status='awaiting_payment' THEN 'awaiting_confirmation' ELSE delivery_status END,
-          updated_at=CURRENT_TIMESTAMP WHERE id=? AND order_status<>'cancelled'`).bind(payment?.id??"",order.id),
-        db.prepare(`INSERT INTO delivery_events (order_id,status,note) SELECT ?,'payment_confirmed','Online payment captured'
-          WHERE NOT EXISTS(SELECT 1 FROM delivery_events WHERE order_id=? AND status='payment_confirmed')`).bind(order.id,order.id),
-      ]);
+      try {
+        await captureOnlineOrderPayment({
+          db,
+          orderId: order.id,
+          paymentId: payment?.id ?? "",
+          note: "Online payment captured",
+        });
+      } catch (error) {
+        await db.prepare("DELETE FROM payment_events WHERE provider_event_id=?").bind(providerEventId).run();
+        if (error instanceof InventoryReservationError) return Response.json({ error: error.message }, { status: error.status });
+        throw error;
+      }
     }
     if (order && eventType === "payment.failed") {
       await db.prepare("UPDATE orders SET payment_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status <> 'paid'").bind(order.id).run();

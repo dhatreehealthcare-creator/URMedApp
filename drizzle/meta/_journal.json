@@ -218,6 +218,20 @@
       "when": 1786458000000,
       "tag": "0030_harden_runtime_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1786474431000,
+      "tag": "0031_normalize_purchase_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1786475495556,
+      "tag": "0032_perfect_sunset_bain",
+      "breakpoints": true
     }
   ]
 }

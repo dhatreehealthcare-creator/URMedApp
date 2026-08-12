@@ -98,14 +98,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
             AND item.inventory_id = pharmacy_inventory.id
         ), 0), updated_at = CURRENT_TIMESTAMP
         WHERE id IN (SELECT inventory_id FROM order_items WHERE order_id = ?)
-          AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND delivery_status = ? AND order_status NOT IN ('completed', 'cancelled'))`)
+          AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND delivery_status = ?
+            AND inventory_status='committed' AND order_status NOT IN ('completed', 'cancelled'))`)
           .bind(orderId, orderId, orderId, order.deliveryStatus),
         db.prepare(`INSERT INTO stock_ledger (vendor_id, inventory_id, movement_type, quantity_delta, balance_after,
           reference_type, reference_id, reason, actor_profile_id)
           SELECT i.vendor_id, i.id, 'order_cancel_restore', SUM(item.quantity), i.quantity, 'order', o.id, ?, ?
           FROM orders o JOIN order_items item ON item.order_id = o.id
           JOIN pharmacy_inventory i ON i.id = item.inventory_id
-          WHERE o.id = ? AND o.delivery_status = ? AND o.order_status NOT IN ('completed', 'cancelled')
+          WHERE o.id = ? AND o.delivery_status = ? AND o.inventory_status='committed'
+            AND o.order_status NOT IN ('completed', 'cancelled')
           GROUP BY i.vendor_id, i.id, i.quantity, o.id`).bind(note, profile.id, orderId, order.deliveryStatus),
       );
     }

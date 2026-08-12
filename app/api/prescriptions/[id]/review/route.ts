@@ -81,17 +81,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       statements.push(
         db.prepare(`UPDATE pharmacy_inventory SET quantity = quantity + COALESCE((SELECT SUM(oi.quantity)
           FROM order_items oi JOIN orders o ON o.id = oi.order_id
-          WHERE oi.inventory_id = pharmacy_inventory.id AND o.prescription_id = ? AND o.order_status <> 'cancelled'), 0),
+          WHERE oi.inventory_id = pharmacy_inventory.id AND o.prescription_id = ?
+            AND o.inventory_status='committed' AND o.order_status <> 'cancelled'), 0),
           updated_at = CURRENT_TIMESTAMP
           WHERE id IN (SELECT oi.inventory_id FROM order_items oi JOIN orders o ON o.id = oi.order_id
-            WHERE o.prescription_id = ? AND o.order_status <> 'cancelled')`).bind(prescriptionId, prescriptionId),
+            WHERE o.prescription_id = ? AND o.inventory_status='committed' AND o.order_status <> 'cancelled')`).bind(prescriptionId, prescriptionId),
         db.prepare(`INSERT INTO stock_ledger (vendor_id, inventory_id, movement_type, quantity_delta, balance_after,
           reference_type, reference_id, reason, actor_profile_id)
           SELECT i.vendor_id, i.id, 'prescription_reject_restore', SUM(oi.quantity), i.quantity, 'order', o.id,
             'Stock restored after prescription rejection', ?
           FROM orders o JOIN order_items oi ON oi.order_id = o.id
           JOIN pharmacy_inventory i ON i.id = oi.inventory_id
-          WHERE o.prescription_id = ? AND o.order_status <> 'cancelled'
+          WHERE o.prescription_id = ? AND o.inventory_status='committed' AND o.order_status <> 'cancelled'
           GROUP BY i.vendor_id, i.id, i.quantity, o.id`).bind(profile.id, prescriptionId),
         db.prepare(`INSERT INTO delivery_events (order_id, status, actor_profile_id, note)
           SELECT id, 'prescription_rejected', ?, ? FROM orders WHERE prescription_id = ? AND order_status <> 'cancelled'`)
