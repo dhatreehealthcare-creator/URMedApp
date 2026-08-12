@@ -1,15 +1,11 @@
-import { getD1, isAuthorizedOwner } from "../../../../db/d1";
+import { getD1 } from "../../../../db/d1";
+import { requireAdminProfile } from "../../../../lib/admin-access";
 import { appendAuditEvent } from "../../../../lib/audit";
-import { errorResponse, requireLocalProfile, type LocalProfile } from "../../../../lib/auth-server";
-
-async function adminProfile(request: Request): Promise<LocalProfile | null> {
-  try { return (await requireLocalProfile(request, ["admin"])).profile; }
-  catch (error) { if (isAuthorizedOwner(request)) return null; throw error; }
-}
+import { errorResponse } from "../../../../lib/auth-server";
 
 export async function GET(request: Request) {
   try {
-    await adminProfile(request); const db=getD1();
+    await requireAdminProfile(request); const db=getD1();
     const [summary,categories,stores,stock,sales,expenses,ledger,deliveries,deliveryAgents,governance] = await Promise.all([
       db.prepare(`SELECT
         (SELECT COUNT(*) FROM vendors) AS vendors,
@@ -47,20 +43,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request){
   try{
-    const profile=await adminProfile(request); const body=await request.json() as Record<string,unknown>; const action=String(body.action??""); const db=getD1();
+    const profile=await requireAdminProfile(request); const body=await request.json() as Record<string,unknown>; const action=String(body.action??""); const db=getD1();
     if(action==="category"){
       const name=String(body.name??"").trim().slice(0,100); const status=String(body.status??"active"); const id=Number(body.id||0);
       if(!name||!["active","inactive"].includes(status)) return Response.json({error:"Category name and status are required"},{status:400});
       if(id) await db.prepare(`UPDATE categories SET name=?,status=? WHERE id=?`).bind(name,status,id).run();
       else await db.prepare(`INSERT INTO categories (name,status) VALUES (?,?)`).bind(name,status).run();
-      await appendAuditEvent({actorProfileId:profile?.id??null,action:id?"category.updated":"category.created",entityType:"category",entityId:id||name,after:{name,status},requestId:request.headers.get("cf-ray")??""});
+      await appendAuditEvent({actorProfileId:profile.id,action:id?"category.updated":"category.created",entityType:"category",entityId:id||name,after:{name,status},requestId:request.headers.get("cf-ray")??""});
       return Response.json({updated:true});
     }
     if(action==="expense"){
       const purpose=String(body.purpose??"").trim().slice(0,200), expenseHead=String(body.expenseHead??"").trim().slice(0,100), paymentMode=String(body.paymentMode??"").trim().slice(0,50), reference=String(body.referenceNumber??"").trim().slice(0,100);
       const amountPaise=Math.round(Number(body.amount)*100), expenseDate=String(body.expenseDate??""); const vendorId=body.vendorId?Number(body.vendorId):null;
-      const actorId=profile?.id??(await db.prepare(`SELECT id FROM account_profiles WHERE role='admin' AND status='active' ORDER BY id LIMIT 1`).first<{id:number}>())?.id;
-      if(!actorId) return Response.json({error:"Create or sign in with an active admin profile before recording expenses"},{status:409});
+      const actorId=profile.id;
       if(!purpose||!expenseHead||!paymentMode||!Number.isInteger(amountPaise)||amountPaise<1||!/^\d{4}-\d{2}-\d{2}$/.test(expenseDate)) return Response.json({error:"Complete all expense fields with a positive amount"},{status:400});
       const result=await db.prepare(`INSERT INTO expenses (vendor_id,purpose,expense_head,amount_paise,expense_date,payment_mode,reference_number,created_by_profile_id) VALUES (?,?,?,?,?,?,?,?)`).bind(vendorId,purpose,expenseHead,amountPaise,expenseDate,paymentMode,reference,actorId).run();
       const expenseId=Number(result.meta.last_row_id);
@@ -75,13 +70,12 @@ export async function POST(request: Request){
       const recordType=String(body.recordType??"").trim().slice(0,100), legalBasis=String(body.legalBasis??"").trim().slice(0,300), disposalMethod=String(body.disposalMethod??"").trim().slice(0,150), activeFrom=String(body.activeFrom??""); const months=Number(body.retentionMonths);
       if(!recordType||!legalBasis||!disposalMethod||!Number.isInteger(months)||months<1||months>240||!/^\d{4}-\d{2}-\d{2}$/.test(activeFrom)) return Response.json({error:"Retention policy details are invalid"},{status:400});
       await db.prepare(`INSERT INTO retention_policies (record_type,retention_months,legal_basis,disposal_method,active_from) VALUES (?,?,?,?,?)`).bind(recordType,months,legalBasis,disposalMethod,activeFrom).run();
-      await appendAuditEvent({actorProfileId:profile?.id??null,action:"retention_policy.created",entityType:"retention_policy",entityId:recordType,after:{months,legalBasis,disposalMethod,activeFrom},requestId:request.headers.get("cf-ray")??""});
+      await appendAuditEvent({actorProfileId:profile.id,action:"retention_policy.created",entityType:"retention_policy",entityId:recordType,after:{months,legalBasis,disposalMethod,activeFrom},requestId:request.headers.get("cf-ray")??""});
       return Response.json({created:true},{status:201});
     }
     if(action==="assign_delivery"){
       const orderId=Number(body.orderId),agentId=Number(body.agentId);
-      const actorId=profile?.id??(await db.prepare(`SELECT id FROM account_profiles WHERE role='admin' AND status='active' ORDER BY id LIMIT 1`).first<{id:number}>())?.id;
-      if(!actorId)return Response.json({error:"An active administrator profile is required"},{status:409});
+      const actorId=profile.id;
       if(!Number.isInteger(orderId)||!Number.isInteger(agentId))return Response.json({error:"Order and delivery agent are required"},{status:400});
       const order=await db.prepare(`SELECT id,vendor_id AS vendorId,delivery_method AS deliveryMethod,delivery_status AS deliveryStatus,order_status AS orderStatus FROM orders WHERE id=?`).bind(orderId).first<{id:number;vendorId:number;deliveryMethod:string;deliveryStatus:string;orderStatus:string}>();
       const agent=await db.prepare(`SELECT da.id,da.availability_status AS availabilityStatus,profile.status FROM delivery_agents da JOIN account_profiles profile ON profile.id=da.profile_id WHERE da.id=?`).bind(agentId).first<{id:number;availabilityStatus:string;status:string}>();

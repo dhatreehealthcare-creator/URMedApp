@@ -24,6 +24,8 @@ type ActiveReservation = {
   status: ReservationStatus;
 };
 
+type ReleaseStatus = "released" | "expired";
+
 export class InventoryReservationError extends Error {
   readonly status: number;
 
@@ -49,6 +51,75 @@ export function prepareOnlineOrderReservation(db: D1Database, input: {
     FROM orders o JOIN order_items item ON item.order_id=o.id
     WHERE o.order_number=? AND item.inventory_id=?`)
     .bind(input.expiresAt, input.orderNumber, input.inventoryId);
+}
+
+export function prepareOrderReservationReleaseStatements(db: D1Database, input: {
+  orderId: number;
+  status: ReleaseStatus;
+  reason: string;
+}) {
+  const reason = input.reason.trim().slice(0, 200) || (input.status === "expired" ? "Reservation expired" : "Reservation released");
+  return [
+    db.prepare(`UPDATE inventory_reservations SET status=?,released_at=COALESCE(released_at,CURRENT_TIMESTAMP),
+      status_reason=CASE WHEN status_reason='' THEN ? ELSE status_reason END,updated_at=CURRENT_TIMESTAMP
+      WHERE order_id=? AND status='active'
+        AND (?<>'expired' OR datetime(expires_at)<=datetime('now'))
+        AND EXISTS (SELECT 1 FROM orders current_order WHERE current_order.id=inventory_reservations.order_id
+          AND current_order.inventory_status='reserved' AND current_order.payment_status<>'paid')`)
+      .bind(input.status, reason, input.orderId, input.status),
+    db.prepare(`UPDATE orders SET inventory_status='released',updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND inventory_status='reserved' AND payment_status<>'paid'
+        AND NOT EXISTS (SELECT 1 FROM inventory_reservations reservation
+          WHERE reservation.order_id=orders.id AND reservation.status='active')`)
+      .bind(input.orderId),
+  ];
+}
+
+export async function releaseOrderReservations(input: {
+  db: D1Database;
+  orderId: number;
+  status?: ReleaseStatus;
+  reason: string;
+}) {
+  const statements = prepareOrderReservationReleaseStatements(input.db, {
+    orderId: input.orderId,
+    status: input.status ?? "released",
+    reason: input.reason,
+  });
+  const results = await input.db.batch(statements);
+  return {
+    releasedReservations: Number(results[0]?.meta.changes ?? 0),
+    orderReleased: Boolean(results[1]?.meta.changes),
+  };
+}
+
+export async function releaseExpiredReservations(db: D1Database, limit = 100) {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100);
+  const expired = await db.prepare(`SELECT DISTINCT reservation.order_id AS orderId
+    FROM inventory_reservations reservation JOIN orders current_order ON current_order.id=reservation.order_id
+    WHERE reservation.status='active' AND reservation.expires_at<=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      AND current_order.inventory_status='reserved' AND current_order.payment_status<>'paid'
+    ORDER BY reservation.order_id LIMIT ?`).bind(safeLimit).all<{orderId:number}>();
+  if (!expired.results.length) return { ordersReleased: 0, reservationsReleased: 0 };
+
+  const orderIds = expired.results.map(({ orderId }) => orderId);
+  const placeholders = orderIds.map(() => "?").join(",");
+  const results = await db.batch([
+    db.prepare(`UPDATE inventory_reservations SET status='expired',released_at=COALESCE(released_at,CURRENT_TIMESTAMP),
+      status_reason=CASE WHEN status_reason='' THEN 'Reservation expired before payment' ELSE status_reason END,
+      updated_at=CURRENT_TIMESTAMP WHERE order_id IN (${placeholders}) AND status='active'
+        AND expires_at<=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        AND EXISTS (SELECT 1 FROM orders current_order WHERE current_order.id=inventory_reservations.order_id
+          AND current_order.inventory_status='reserved' AND current_order.payment_status<>'paid')`).bind(...orderIds),
+    db.prepare(`UPDATE orders SET inventory_status='released',updated_at=CURRENT_TIMESTAMP
+      WHERE id IN (${placeholders}) AND inventory_status='reserved' AND payment_status<>'paid'
+        AND NOT EXISTS (SELECT 1 FROM inventory_reservations reservation
+          WHERE reservation.order_id=orders.id AND reservation.status='active')`).bind(...orderIds),
+  ]);
+  return {
+    ordersReleased: Number(results[1]?.meta.changes ?? 0),
+    reservationsReleased: Number(results[0]?.meta.changes ?? 0),
+  };
 }
 
 async function loadReservationOrder(db: D1Database, orderId: number) {
@@ -78,6 +149,7 @@ export async function ensureOnlineReservationPayable(db: D1Database, orderId: nu
     throw new InventoryReservationError("The order does not have a complete stock reservation");
   }
   if (order.activeReservationCount !== order.itemCount || order.validActiveReservationCount !== order.itemCount) {
+    await releaseOrderReservations({ db, orderId, status: "expired", reason: "Reservation expired before payment" });
     throw new InventoryReservationError("The stock reservation has expired. Refresh the cart and place a new order.");
   }
   return order;

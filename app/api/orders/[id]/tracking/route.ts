@@ -1,6 +1,7 @@
 import { getD1 } from "../../../../../db/d1";
 import { appendAuditEvent } from "../../../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../../../lib/auth-server";
+import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
 import { nextDeliveryStatuses, orderStatusForDeliveryStatus, workflowStatusLabels, type DeliveryMethod, type WorkflowRole } from "../../../../../lib/order-workflow";
 import { sendTransactionalEmail } from "../../../../../lib/resend";
 
@@ -93,6 +94,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const statements = [];
     if (status === "cancelled") {
       statements.push(
+        ...prepareOrderReservationReleaseStatements(db, { orderId, status: "released", reason: note }),
         db.prepare(`UPDATE pharmacy_inventory SET quantity = quantity + COALESCE((
           SELECT SUM(item.quantity) FROM order_items item WHERE item.order_id = ?
             AND item.inventory_id = pharmacy_inventory.id

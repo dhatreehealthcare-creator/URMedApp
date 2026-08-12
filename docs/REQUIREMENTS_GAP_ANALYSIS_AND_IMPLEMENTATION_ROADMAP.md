@@ -1,7 +1,7 @@
 # URMED Requirements Gap Analysis and Implementation Roadmap
 
-**Analysis date:** 12 August 2026  
-**Application:** URMED Pharmacy & Medicine Delivery  
+**Analysis date:** 12 August 2026
+**Application:** URMED Pharmacy & Medicine Delivery
 **Purpose:** Trace the supplied vendor, customer, and administrator requirements against the current codebase, identify functional and technical gaps, and define a dependency-aware implementation plan.
 
 ## 1. How to use this document
@@ -54,15 +54,15 @@ This makes the application look more complete than it is. The highest-value next
 
 | Area | Current implementation | Assessment |
 |---|---|---|
-| Web application | Next-compatible App Router on Vinext/Vite, currently centered on `app/page.tsx` with client-side role/mode switching | Functional for a demo, but real role areas should become protected routes with direct URLs |
+| Web application | Next-compatible App Router on Vinext/Vite with a public marketplace and dedicated `/vendor`, `/customer`, `/admin`, and `/delivery` workspaces | Each role workspace has a direct URL and mounts only after an active exact-role profile is confirmed |
 | Structured data | Cloudflare D1 with Drizzle schema and SQL migrations | Strong foundation; several tables are ahead of their UI |
 | Files | Cloudflare R2 plus `stored_documents` metadata | Suitable foundation; malware scanning is not actually implemented |
 | Public authentication | Supabase Auth; Twilio is expected through Supabase phone provider configuration | Partial end-to-end onboarding; vendor and customer registration are fragmented |
 | Email | Supabase verification email plus Resend helper for transactional messages | Provider-dependent; failures are not queued or retried |
-| Payments | Razorpay order, browser verification, and webhook endpoints | Good foundation; unpaid/failed order stock handling needs redesign |
+| Payments | Razorpay order, browser verification, webhook endpoints, and expiring D1 stock reservations | Phase 0 reservation creation, commit, release, expiry, and recovery controls are implemented and integration-tested |
 | Maps/geolocation | Browser geolocation and Leaflet-based picker | Implemented in forms; privacy and saved-address behavior need completion |
-| Authorization | Local role profiles, vendor permissions, owner-header fallback, test sessions | Substantial, but admin authorization is inconsistent across endpoints |
-| Tests | Workflow/date/geo/control unit tests and one rendered HTML check | Insufficient for production-critical API and end-to-end flows |
+| Authorization | Active local role profiles, exact-role route gates, role-scoped APIs, vendor permissions, and test sessions | Human admin bypasses and the production role switch are removed; server/API authorization remains the security boundary |
+| Tests | 66 unit/regression tests plus isolated packaged-Worker D1/R2 HTTP integration coverage | Phase 0 controls and the P1-01 vendor-registration package are covered; later provider/browser flows remain |
 
 ## 4. Immediate defects and risks
 
@@ -70,20 +70,20 @@ These should be addressed before adding broad new features.
 
 | Priority | Finding | Impact | Required action |
 |---|---|---|---|
-| P0 | Purchase receiving saves status as `received`, while supplier-return queries require `posted` | Valid received stock may never appear in the supplier-return selector | Define one purchase lifecycle enum and update queries, migrations, UI, and tests consistently |
-| P0 | Online orders decrement `quantity` before payment instead of using `reserved_quantity`; payment failure does not release stock | Unpaid or abandoned orders can remove sellable stock indefinitely | Implement expiring reservations, capture/confirm conversion, cancellation release, and a recovery job |
-| P0 | Vendor compliance UI calls owner-only endpoints without the authenticated bearer token | A signed-in admin/test-admin can fail while the special owner header succeeds | Use one server-side admin authorization policy and authenticated client calls for all admin endpoints |
-| P0 | Public auth UI allows role switching inside one page instead of enforcing route and role access | Users can see irrelevant workspaces; authorization behavior is hard to reason about | Introduce protected role routes and server/API authorization tests; remove the production role switch |
+| Resolved P0-01 | Purchase receiving formerly saved `received`, while supplier-return queries required `posted` | Valid received stock could be absent from the selector | `received` is canonical, legacy `posted` remains compatible/normalized, and real-D1 HTTP coverage proves selector and return side effects |
+| Resolved P0-02–P0-04 | Online orders formerly decremented stock before payment and did not recover abandoned reservations | Unpaid or abandoned orders could remove sellable stock indefinitely | Expiring reservations now commit/release once and scheduled recovery handles no-traffic periods; real-D1 coverage proves each terminal path |
+| Resolved P0-05 | Vendor compliance UI formerly relied on inconsistent owner-only authorization | Signed-in administrators could fail while a special header succeeded | All human admin APIs/UI calls use active administrator bearer sessions; role and inactive-session boundaries are integration-tested |
+| Resolved P0-06 | Public auth UI formerly allowed role switching inside one page instead of enforcing route and role access | Users could see irrelevant workspaces; authorization behavior was hard to reason about | Dedicated exact-role routes and a shared active-profile gate are now in place; the production switch and duplicate delivery login were removed |
 | P1 | Vendor registration is split between `AuthPanel` and post-login `VendorSetup` | The required registration form and success journey do not exist as one coherent process | Build a guided registration wizard with persisted draft/status and explicit completion page |
 | P1 | Customer registration cannot collect name, phone OTP, email, and password in one path | Neither current email registration nor phone registration satisfies the supplied form | Build a unified customer registration and verification flow |
 | P1 | Product master is a local-state prototype; no product CRUD API is connected | Vendors/admin cannot maintain the requested product fields or alternates | Implement governed product/variant CRUD and connect the form |
 | P1 | Admin APIs fetch stock, sales, ledger, store, and delivery data, but most are not rendered as usable filtered reports | Core admin requirements are visibly missing | Create dedicated report endpoints/views with filters, pagination, totals, and export |
 | P1 | Public inventory responses expose exact pharmacy latitude and longitude | The private registered location may be disclosed even though the requirement says it is not customer-visible | Separate legal/private address from public service location, or return only server-calculated distance/serviceability |
 | P1 | Uploaded documents are marked `content_validated`, but no antivirus/malware scanner exists | File signatures are checked, but malicious content could still be stored and opened | Add quarantine and asynchronous malware scanning; do not label signature checks as malware validation |
-| P1 | `npm run build` depends on Linux GNU `timeout`, and `vinext start` does not inject local D1/R2 bindings | macOS production-like local verification is confusing and can return HTTP 500 | Add a portable build timeout or documented cross-platform wrapper and a binding-aware local production preview |
+| Resolved P0-08 | `npm run build` formerly depended on Linux GNU `timeout`, and `vinext start` did not inject local D1/R2 bindings | macOS production-like local verification was confusing and database/file APIs returned HTTP 500 | Build now uses a portable bounded runner; production preview runs the packaged Worker with persistent local D1/R2 bindings and applies packaged migrations |
 | P2 | Resend failures return `sent: false` but are not retried or surfaced | Verification-adjacent and order messages can be silently lost | Add an outbox, retry policy, delivery status, and admin visibility |
 | P2 | The live product/order flow supports only one selected product even though the order API accepts multiple items | The required cart is not implemented end to end | Add persistent server-validated cart lines grouped by pharmacy |
-| P2 | `customers` legacy records and live `account_profiles` overlap | Reporting and identity ownership can become ambiguous | Document the source of truth and complete a migration/linking strategy |
+| Resolved P0-07 | `customers` legacy records and live `account_profiles` formerly lacked an explicit ownership policy | Reporting and identity ownership could become ambiguous | Supabase Auth now has the documented credential authority, `account_profiles` is the live application identity/ownership source, and `customers` is an unlinked admin-only reference archive |
 
 ## 5. Requirement traceability matrix
 
@@ -91,17 +91,17 @@ These should be addressed before adding broad new features.
 
 | ID | Requirement | Status | Current evidence | Gap / required completion | Phase |
 |---|---|---|---|---|---|
-| V-REG-01 | Shop/business name | Partial | Collected by live email registration and vendor profile | Must be part of one guided registration submission and be recoverable if verification is interrupted | 1 |
-| V-REG-02 | Owner name | Partial | Collected by live auth and profile forms | Consolidate into guided registration; validate length and legal-name expectations | 1 |
+| V-REG-01 | Shop/business name | Implemented foundation | Collected in the unified authenticated vendor-registration wizard and saved in one review submission | Persist/resume pre-submission drafts under P1-10 | 1 |
+| V-REG-02 | Owner name | Implemented foundation | Collected and length-bounded in the unified wizard and shared server validation | Add stronger legal-name guidance if compliance requires it | 1 |
 | V-REG-03 | Phone, exactly 10 digits | Partial | Client and server validation exist | Registration must not create a usable vendor until phone ownership is verified | 1 |
 | V-REG-04 | Ask for and verify phone OTP | Partial | Supabase OTP exists; profile phone-change OTP exists | Email registration currently creates the account before the required vendor OTP is completed; unify the sequence | 1 |
 | V-REG-05 | Validate phone already registered | Partial | Conditional unique indexes and conflict checks exist during profile creation/update | Add a clear, safe availability result in the registration flow and integration tests for races | 1 |
-| V-REG-06 | Landline, 10 digits | Partial | Live vendor profile supports it; the live auth registration form does not | Include in onboarding; decide whether blank is allowed (current behavior: optional) | 1 |
+| V-REG-06 | Landline, 10 digits | Implemented | Included in onboarding; optional under D-04 and validated as exactly 10 digits when entered | None for the stated requirement | 1 |
 | V-REG-07 | Email and duplicate validation | Partial | Supabase handles email accounts; vendor email has a unique D1 index | Add coherent duplicate-account UX without unsafe account enumeration; test provider behavior | 1 |
 | V-REG-08 | Password | Implemented foundation | Supabase email/password registration and login exist | Add password policy, confirmation, strength guidance, rate limiting verification, and recovery flow | 1 |
-| V-REG-09 | GST number | Partial | Stored and server format-validated in vendor profile | Include in registration; confirm whether optional as stated and prevent unverified GST-rated selling | 1 |
-| V-REG-10 | Required licence upload; JPG/JPEG/PNG/PDF/DOC/DOCX | Partial | Live upload supports the exact extensions, 8 MB limit, MIME/signature checks, R2 storage, and licence review | Upload is post-login instead of registration; add quarantine/malware scanning and upload progress/retry | 1, 7 |
-| V-REG-11 | Private address with geolocation, latitude, longitude | Partial | Live address and map picker with server coordinate validation exist | Move into onboarding, persist incomplete drafts, and stop exposing private coordinates to customer APIs | 1 |
+| V-REG-09 | GST number | Implemented foundation | Optional GSTIN is included in registration and format-validated under D-05 | Enforce the GST-rated selling gate in the sales phase | 1 |
+| V-REG-10 | Required licence upload; JPG/JPEG/PNG/PDF/DOC/DOCX | Implemented foundation | The wizard requires the exact allowed formats; signature/MIME checks, 8 MB limit, R2 metadata, licence record, and pending review are wired | Add upload progress/retry and Phase 7 quarantine/malware scanning | 1, 7 |
+| V-REG-11 | Private address with geolocation, latitude, longitude | Implemented foundation | Unified wizard requires a private address and map/coordinates; server validation persists them with the review package under D-06 | Persist/resume drafts and finish the public-location API privacy audit under P1-09/P1-10 | 1 |
 | V-REG-12 | Registration success page | Missing | Only inline messages/cards exist | Add a dedicated success/status route showing phone, email, licence, pharmacist, and admin-review state | 1 |
 | V-REG-13 | Email verification link sent | Partial | Supabase signup/resend is wired | Verify template, redirect URL, expiry, resend limits, and delivery observability | 1 |
 | V-REG-14 | Verification link returns user and auto-logs in | Partial | Supabase client enables session URL detection | No dedicated callback/success path or end-to-end test proves this behavior | 1 |
@@ -175,7 +175,7 @@ These should be addressed before adding broad new features.
 | C-ORD-03 | Search and add to cart | Partial | Search is live, API supports multiple items, but checkout accepts one selected item in the UI | Implement multi-line cart, quantity editing, pharmacy grouping, price/stock revalidation, and persistence | 4 |
 | C-ORD-04 | Upload prescription order | Implemented foundation | Secure upload and pharmacist review exist | Integrate cleanly with cart containing multiple Rx items and enforce document reuse/expiry policy | 4 |
 | C-ORD-05 | Cart | Prototype / partial | Public drawer uses demo products; live order screen does not use it | Replace demo cart with authenticated/database-backed cart state | 4 |
-| C-ORD-06 | Payment | Implemented foundation | Razorpay and COD flows exist | Complete reservation expiry, failure/retry/refund handling, reconciliation, and E2E sandbox tests | 0, 4 |
+| C-ORD-06 | Payment | Implemented foundation | Razorpay/COD flows and reservation expiry/failure release exist | Complete provider retry/refund handling, reconciliation, receipts, and browser E2E sandbox tests | 4 |
 | C-ORD-07 | Pickup or home delivery | Implemented foundation | Pickup, pharmacy, and URMED delivery modes exist with radius enforcement | Clarify “home delivery” choices in UX and calculate configurable fees/promises server-side | 4 |
 | C-HIS-01 | Purchase history | Partial | Live scoped orders and delivery timeline are shown | Add order detail, filters, cancellation eligibility, reorder, and pagination | 4 |
 | C-HIS-02 | Invoice access | Missing in customer UI | Tax invoice records are created after delivery | Add authenticated HTML/PDF invoice endpoint and download button | 4 |
@@ -208,25 +208,41 @@ These should be addressed before adding broad new features.
 
 - [x] P0-01 Unify purchase status values and repair supplier-return eligibility.
 - [x] P0-02 Replace immediate online stock decrement with an expiring reservation lifecycle using `reserved_quantity` or a dedicated reservation table.
-- [ ] P0-03 Release reservations after payment failure, timeout, prescription rejection, or cancellation; make release idempotent.
-- [ ] P0-04 Add a scheduled recovery job for abandoned payments/reservations.
-- [ ] P0-05 Unify admin authorization and make all admin UI calls authenticated.
-- [ ] P0-06 Introduce protected routes for `/vendor`, `/customer`, `/admin`, and `/delivery`; remove the production role switch.
-- [ ] P0-07 Decide and document the source of truth for live accounts versus recovered `customers` records.
-- [ ] P0-08 Make the build/preview workflow cross-platform and binding-aware.
-- [ ] P0-09 Add D1/R2 API integration-test infrastructure and test the defects above.
+- [x] P0-03 Release reservations after payment failure, timeout, prescription rejection, or cancellation; make release idempotent.
+- [x] P0-04 Add a scheduled recovery job for abandoned payments/reservations.
+- [x] P0-05 Unify admin authorization and make all admin UI calls authenticated.
+- [x] P0-06 Introduce protected routes for `/vendor`, `/customer`, `/admin`, and `/delivery`; remove the production role switch.
+- [x] P0-07 Decide and document the source of truth for live accounts versus recovered `customers` records.
+- [x] P0-08 Make the build/preview workflow cross-platform and binding-aware.
+- [x] P0-09 Add D1/R2 API integration-test infrastructure and test the defects above.
 
-**Exit criteria:** Stock cannot be lost through an abandoned payment; supplier returns work for received purchases; a user cannot access another role or tenant; the same build/preview instructions work locally and in CI.
+**Phase 0 status:** Complete as of 2026-08-12.
+
+**Exit criteria:** Met. Stock is reservation-backed and recovered after terminal/abandoned payment paths; received purchases are supplier-returnable with audited accounting/stock effects; role and tenant boundaries reject unauthorized access; and the verified build, binding-aware preview, and isolated D1/R2 test workflows run on macOS and Linux without GNU `timeout`.
 
 **P0-01 lifecycle decision (2026-08-12):** The immediate-receiving path transitions through `posting` to the canonical terminal state `received`. Only `received` is emitted by current code and it is returnable. Legacy `posted` rows remain readable/returnable during rollout and migration `0031_normalize_purchase_status.sql` converts them to `received`; `draft` remains the schema default for future draft-entry work.
 
-**P0-02 reservation decision (2026-08-12):** New online orders create one active `inventory_reservations` row per FEFO-allocated order item with a 15-minute expiry. Creation increases `reserved_quantity` but does not reduce physical `quantity` or write a sale stock movement. Verified/captured payment atomically transitions active reservations to `committed`, reduces both physical and reserved quantities, records the stock ledger movement once, and marks the order inventory commitment as `committed`. COD and pre-migration orders retain their existing committed-stock behavior. Idempotent release after failure, rejection, cancellation, or expiry remains P0-03; scheduled recovery remains P0-04.
+**P0-02 reservation decision (2026-08-12):** New online orders create one active `inventory_reservations` row per FEFO-allocated order item with a 15-minute expiry. Creation increases `reserved_quantity` but does not reduce physical `quantity` or write a sale stock movement. Verified/captured payment atomically transitions active reservations to `committed`, reduces both physical and reserved quantities, records the stock ledger movement once, and marks the order inventory commitment as `committed`. COD and pre-migration orders retain their existing committed-stock behavior. Idempotent release is completed in P0-03; scheduled recovery remains P0-04.
+
+**P0-03 release decision (2026-08-12):** Payment failure, prescription rejection, and order cancellation transition only active reservations to `released` inside the surrounding business transaction. Expired reservations transition to `expired` during payment eligibility and normal order/catalogue/inventory/refill/vendor-operation traffic. Database transition guards decrement `reserved_quantity` once, preserve physical `quantity`, block release after commitment, and make repeated events no-ops. P0-04 remains responsible for scheduled recovery when no application traffic occurs.
+
+**P0-04 recovery decision (2026-08-12):** The hosted Worker runs an inventory-reservation expiry sweep every five minutes, independently of request traffic. Each scheduled timestamp has a unique recovery-run key; completed or in-progress duplicates are no-ops, failed runs may retry the same key, and each invocation processes at most ten set-based batches of 50 orders. Run status, attempts, released order/reservation counts, remaining backlog, timestamps, and errors are persisted in `inventory_reservation_recovery_runs`, while Worker logs report the same operational summary. A remaining backlog is intentionally left for the next scheduled run rather than extending one Worker invocation without a bound.
+
+**P0-05 administrator authorization decision (2026-08-12):** Every human `/api/admin/*` request now requires the same active URMED profile with role `admin`, authenticated by the application bearer session. The former hard-coded Sites-owner email and `terminal.local` bypasses were removed, and compliance/operations audit records use the authenticated administrator profile. The reminder processor retains its configured job secret as a separate machine credential; its admin UI invocation uses the normal bearer session. Public profile creation still permits only customer/vendor roles, and every admin data or compliance-document request uses the authenticated request helper. Dedicated workspace routing and removal of the testing role switch are recorded under P0-06.
+
+**P0-06 protected-route decision (2026-08-12):** `/vendor`, `/customer`, `/admin`, and `/delivery` are dedicated App Router entry points using one shared session gate. Workspace content mounts only after `/api/auth/profile` returns an active profile whose role exactly matches the requested route; a wrong-role or inactive profile is rejected, while every data API retains its existing server-side role and tenant checks as the security boundary. Customer and vendor routes retain public registration/login, but administrator and delivery roles are login-only and must be pre-provisioned. The public marketplace now links to real role URLs, the in-page role/mode switch was removed, and delivery no longer owns a second test-only login/session path.
+
+**P0-07 account identity decision (2026-08-12):** Supabase Auth is authoritative for production credentials, verification, and sessions; `account_profiles` is authoritative for live URMED roles, status, identity, and ownership; and the imported `customers` table is an immutable, admin-only recovery archive that cannot authenticate or own live operational records. The canonical relationship is `Supabase user ID -> account_profiles.auth_user_id -> account_profiles.id -> operational records`. No recovered row is linked today, and email/phone equality must never auto-link or overwrite a live profile. A future claim flow requires new reviewed schema, current contact proof, uniqueness/conflict controls, transactional audit evidence, explicit address consent, and preservation of the original archive. The complete decision and conflict matrix are recorded in `docs/ACCOUNT_IDENTITY_SOURCE_OF_TRUTH.md`.
+
+**P0-08 build/preview decision (2026-08-12):** `npm run build` is the canonical bounded production build on macOS and Linux and no longer requires GNU `timeout`; its Node runner preserves the child exit code and returns `124` after timeout/forced termination. `npm run start` (and its `preview` alias) is the canonical local production preview: it validates the built artifact, applies the artifact's pending migrations to persistent local D1 state, and runs the packaged Worker through Wrangler with the declared `DB`, `BUCKET`, assets, and scheduled handler bindings. The listener defaults to `127.0.0.1:3000`, can be changed with `HOST`/`PORT`, and never targets hosted D1/R2 unless the workflow is explicitly redesigned. Artifact validation rejects drift between `.openai/hosting.json`, the generated Worker configuration, packaged migrations, assets, and cron before the preview starts.
+
+**P0-09 integration-test decision (2026-08-12):** The canonical API integration command builds the packaged Worker, creates one temporary local D1/R2 persistence set, applies all packaged migrations and proves the repeat pass is a no-op, loads one deterministic suite fixture, and starts the packaged Worker in Miniflare/Workerd on an operating-system-assigned loopback port. Business scenarios use real HTTP; the scheduled handler is invoked through Miniflare's handler trigger without normal application traffic; and D1/R2 side effects are inspected only after the runtime stops. Outbound provider access is disabled, test-only Razorpay secrets sign local verification/webhook requests, failure logs are buffered, and timeout/signal cleanup removes all temporary state. No production bypass/diagnostic endpoint, hosted resource, or deployment is involved.
 
 ### Phase 1 — Complete identity, registration, and profiles
 
 **Goal:** Deliver coherent vendor and customer onboarding from first form to verified session.
 
-- [ ] P1-01 Build a unified vendor registration wizard containing all required business, contact, licence, and private-location fields.
+- [x] P1-01 Build a unified vendor registration wizard containing all required business, contact, licence, and private-location fields.
 - [ ] P1-02 Require phone OTP and email verification before onboarding is marked complete.
 - [ ] P1-03 Add safe duplicate phone/email handling and race-condition tests.
 - [ ] P1-04 Add vendor registration success/status and verification-return routes.
@@ -238,6 +254,8 @@ These should be addressed before adding broad new features.
 - [ ] P1-10 Add onboarding integration and end-to-end tests, including interrupted/resumed signup.
 
 **Exit criteria:** A new vendor and customer can complete all required fields, verification, auto-login, and profile retrieval without using a test account or hidden role switch.
+
+**P1-01 vendor-registration decision (2026-08-12):** Public email/password account creation remains the authentication boundary and creates only a draft vendor shell. Once authenticated, one four-step wizard collects business/owner names, required 10-digit mobile verification, optional exact-10-digit landline, read-only account email, optional format-checked GSTIN, private legal address and coordinates, home-delivery policy, and the required current drug-licence document/details. The final server action validates the complete package, confirms the authenticated phone, rejects duplicate phone ownership, verifies the vendor-owned R2 document, atomically writes the vendor/profile/licence records, moves non-approved vendors to pending review, and writes one registration-submitted audit event. D-04, D-05, and D-06 are accepted as documented. Email/phone completion policy, availability/race handling, dedicated status/verification routes, resumable drafts, and public-location separation remain P1-02 through P1-05 and P1-09/P1-10.
 
 ### Phase 2 — Complete masters, procurement, and inventory
 
@@ -343,7 +361,7 @@ The following changes should be designed during the named phases rather than add
 ### Identity and onboarding
 
 - Keep credentials and verification tokens in Supabase; do not store passwords in D1.
-- Treat `account_profiles` as the live application identity table and explicitly classify the legacy `customers` table as imported reference data until linked/migrated.
+- Treat `account_profiles` as the only live application identity and ownership table; keep legacy `customers` as unlinked admin-only reference data unless a separately approved proof-based claim migration is implemented.
 - Add registration/onboarding status fields or a dedicated onboarding table so an account can be verified but still incomplete.
 - Add conditional uniqueness for normalized live email if D1 needs to enforce cross-role business rules; do not rely only on UI checks.
 - Persist vendor onboarding drafts only after authentication, or use a short-lived signed server workflow if pre-auth upload is required.
@@ -398,7 +416,7 @@ The following changes should be designed during the named phases rather than add
 
 ### Existing automated coverage
 
-The current 36 tests validate date parsing, API error hygiene, geolocation math, supplier-return arithmetic and persistence, online stock reservations and payment conversion, FEFO, GST splits, delivery state transitions, refill calculations, and test-token behavior. They are useful but do not execute most API routes against a real test D1/R2 environment.
+The current 66 unit/regression tests validate portable build timeout behavior, production-preview binding wiring, administrator-role enforcement, exact-role routing, identity/archive isolation, date/geo/error controls, supplier-return arithmetic, reservation creation/commit/release/expiry/recovery, FEFO, GST, delivery, refill, test-token behavior, and P1-01 vendor-registration validation/wiring. The suite-level packaged-Worker runtime adds real local D1/R2 and HTTP coverage for purchase/return transactions, authorization and tenant isolation, reservation/payment/release/recovery paths, recovered-customer non-ownership, prescription-document controls, and the vendor business/private-location/licence review package.
 
 ### Required test layers
 
@@ -446,3 +464,11 @@ Add one row whenever a requirement or phase milestone is completed.
 | 2026-08-12 | Analysis baseline | Repository mapped to supplied requirements; production artifact, lint, and 24 tests verified | Build validation passed; lint passed; 24/24 tests passed | Begin Phase 0 |
 | 2026-08-12 | P0-01 | Standardized immediate purchase receiving on `received`; made received and legacy `posted` rows supplier-returnable; added legacy normalization migration and transactional regression coverage | TypeScript passed; lint passed; 29/29 tests passed; Vinext production build and artifact validation passed | Apply migration `0031` with the next release; proceed to P0-02 stock reservations |
 | 2026-08-12 | P0-02 | Added 15-minute online inventory reservations, atomic payment-time stock commitment, database transition guards, customer expiry visibility, and pre-migration compatibility | Migration and expiry index verified in SQLite fixtures; TypeScript and lint passed; 36/36 tests passed; Vinext production build and artifact validation passed | Apply migrations `0031` and `0032` with the next release; proceed to P0-03 idempotent reservation release |
+| 2026-08-12 | P0-03 | Added one idempotent release path for failed payments, rejected prescriptions, cancellations, and request-driven expiry reconciliation; released orders are no longer payable and the customer sees the released state | TypeScript and lint passed; 41/41 tests passed; Vinext production build and artifact validation passed | Apply migrations `0031` and `0032` with the next release; proceed to P0-04 scheduled recovery |
+| 2026-08-12 | P0-04 | Added a five-minute Worker cron that recovers expired reservations without request traffic, uses bounded set-based batches, deduplicates scheduled events, retries failed runs, and records recovery outcomes/backlog | Migration `0033` verified in SQLite fixtures; TypeScript and lint passed; 45/45 tests passed; direct Vinext production build and scheduled-handler/cron artifact validation passed | Apply migrations `0031` through `0033` with the next release; proceed to P0-05 unified admin authorization |
+| 2026-08-12 | P0-05 | Unified all human admin APIs on active app-admin bearer sessions, removed owner/localhost bypasses, login-gated the admin workspace, authenticated every admin UI/document request, and attributed admin mutations to the signed-in profile | TypeScript and lint passed; 50/50 tests passed, including shared-contract, wrong-role, bypass-removal, route-inventory, caller-inventory, and login-gate coverage; direct Vinext production build and artifact validation passed | No new migration; proceed to P0-06 protected role routes and removal of the production role switch |
+| 2026-08-12 | P0-06 | Added dedicated `/vendor`, `/customer`, `/admin`, and `/delivery` entry points behind one active exact-role session gate; removed the in-page production role switch, homepage mode routing, and duplicate delivery login/session controls | TypeScript and lint passed; 55/55 tests passed, including route inventory, active/exact-role enforcement, inactive/wrong-role rejection, login-only privileged roles, and role-switch removal; direct Vinext production build exposed all four routes and artifact validation passed | No migration; proceed to P0-07 live-account versus recovered-customer source-of-truth decision |
+| 2026-08-12 | P0-07 | Established Supabase Auth as credential authority, `account_profiles` as the only live identity and ownership source, and `customers` as an unlinked admin-only recovery archive; documented future proof-based claim/link rules and corrected recovery UI/API terminology | TypeScript and lint passed; 59/59 tests passed, including authority-policy, live-schema ownership, archive API isolation, credential exclusion, and no-auto-link guardrails; direct Vinext production build and artifact validation passed | No migration or data rewrite; proceed to P0-08 cross-platform, binding-aware build and preview workflow |
+| 2026-08-12 | P0-08 | Replaced the GNU-only build timeout with a portable bounded Node runner; made the packaged Worker the canonical production preview; added persistent local D1 migration and D1/R2 binding injection; strengthened artifact drift validation and documented listener/state/environment controls | TypeScript and lint passed; 61/61 tests passed, including portable success/timeout and preview wiring coverage; `npm run build` passed directly on macOS; fresh production preview applied all 34 migrations, exposed local `DB`/`BUCKET`, returned catalog data, and completed an authenticated R2 upload/download smoke test | No migration; keep `.sites-runtime/preview-state` disposable and local; proceed to P0-09 D1/R2 API integration-test infrastructure |
+| 2026-08-12 | P0-09 / Phase 0 exit | Added one deterministic packaged-Worker integration harness with fresh local D1/R2, repeatable packaged migrations, suite fixtures, real HTTP transactions, scheduled-handler dispatch, provider network isolation, post-runtime persistence inspection, bounded execution, failure logs, and guaranteed cleanup | Shell/Node syntax, TypeScript, lint, 61/61 unit tests, six integration scenario groups, the complete verified test command, and production build/artifact validation passed | No migration or deployment; confirm D-04, D-05, and D-06 with stakeholders, then proceed to P1-01 vendor registration wizard |
+| 2026-08-12 | P1-01 | Accepted D-04/D-05/D-06 and replaced split pharmacy setup with a four-step authenticated vendor registration wizard and one validated business/contact/private-location/licence submission; new vendor shells remain drafts until submission | TypeScript and lint passed; 66/66 unit/regression tests passed; isolated packaged-Worker HTTP integration proved the vendor-owned R2 upload, atomic D1 vendor/licence pending-review state, and audit event; verified production build/artifact validation passed | No migration or deployment; proceed to P1-02 phone OTP and email verification completion policy |

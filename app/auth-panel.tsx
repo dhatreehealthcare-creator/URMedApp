@@ -1,15 +1,21 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { CheckCircle2, KeyRound, LogOut, MailCheck, MessageSquareText, ShieldCheck } from "lucide-react";
+import { isWorkspaceRoleAuthorized, type WorkspaceProfile, type WorkspaceRole } from "../lib/role-access";
 import { clearTestAccessToken, getAuthClient, getRuntimeConfig, getTestAccessToken, setTestAccessToken, type RuntimeConfig } from "./marketplace-client";
 
-type Role = "customer" | "vendor";
-type LocalProfile = { role: Role; name: string; email: string; phone: string; status: string };
+const roleLabels: Record<WorkspaceRole, string> = {
+  customer: "Customer",
+  vendor: "Vendor",
+  admin: "Administrator",
+  delivery: "Delivery agent",
+};
 
-export function AuthPanel({ role }: { role: Role }) {
+export function AuthPanel({ role, onProfileChange }: { role: WorkspaceRole; onProfileChange?: (profile: WorkspaceProfile | null) => void }) {
+  const provisionedRole = role === "admin" || role === "delivery";
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
-  const [mode, setMode] = useState<"register" | "login">("register");
+  const [mode, setMode] = useState<"register" | "login">(provisionedRole ? "login" : "register");
   const [method, setMethod] = useState<"email" | "phone">("email");
   const [name, setName] = useState("");
   const [businessName, setBusinessName] = useState("");
@@ -18,25 +24,28 @@ export function AuthPanel({ role }: { role: Role }) {
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
-  const [profile, setProfile] = useState<LocalProfile | null>(null);
+  const [profile, setProfile] = useState<WorkspaceProfile | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const syncProfile = async (accessToken: string, fallback?: Record<string, unknown>) => {
+  const syncProfile = useCallback(async (accessToken: string, fallback?: Record<string, unknown>) => {
     let response = await fetch("/api/auth/profile", { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" });
-    let payload = await response.json() as { profile?: LocalProfile; error?: string };
-    if (!payload.profile && fallback) {
+    let payload = await response.json() as { profile?: WorkspaceProfile; error?: string };
+    if (!payload.profile && fallback && !provisionedRole) {
       response = await fetch("/api/auth/profile", {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(fallback),
       });
-      payload = await response.json() as { profile?: LocalProfile; error?: string };
+      payload = await response.json() as { profile?: WorkspaceProfile; error?: string };
     }
     if (!response.ok) throw new Error(payload.error || "URMED profile could not be loaded");
-    setProfile(payload.profile ?? null);
-  };
+    const nextProfile = payload.profile ?? null;
+    if (nextProfile && !isWorkspaceRoleAuthorized(nextProfile, role)) throw new Error(`Sign in with an active ${role} account to continue`);
+    setProfile(nextProfile);
+    onProfileChange?.(nextProfile);
+  }, [onProfileChange, provisionedRole, role]);
 
   useEffect(() => {
     let active = true;
@@ -45,7 +54,7 @@ export function AuthPanel({ role }: { role: Role }) {
     const testToken = getTestAccessToken();
     void getAuthClient().then(async (client) => {
       if (testToken) {
-        await syncProfile(testToken).catch(() => clearTestAccessToken());
+        await syncProfile(testToken).catch(() => { clearTestAccessToken(); onProfileChange?.(null); });
         return;
       }
       if (!client) return;
@@ -61,16 +70,16 @@ export function AuthPanel({ role }: { role: Role }) {
       }
       const { data } = client.auth.onAuthStateChange((_event, sessionValue) => {
         if (!active) return;
-        if (!sessionValue) setProfile(null);
+        if (!sessionValue) { setProfile(null); onProfileChange?.(null); }
       });
       unsubscribe = () => data.subscription.unsubscribe();
     });
     return () => { active = false; unsubscribe?.(); };
-  }, [role]);
+  }, [onProfileChange, role, syncProfile]);
 
   const finishSignIn = async (accessToken: string) => {
-    await syncProfile(accessToken, { role, name: name || email.split("@")[0] || "URMED user", businessName, phone });
-    setMessage(`${role === "vendor" ? "Vendor" : "Customer"} sign-in completed.`);
+    await syncProfile(accessToken, provisionedRole ? undefined : { role, name: name || email.split("@")[0] || "URMED user", businessName, phone });
+    setMessage(`${roleLabels[role]} sign-in completed.`);
   };
 
   const submitEmail = async (event: FormEvent) => {
@@ -82,8 +91,9 @@ export function AuthPanel({ role }: { role: Role }) {
         const payload = await response.json() as { token?: string; error?: string };
         if (!response.ok || !payload.token) throw new Error(payload.error || "Test login failed");
         setTestAccessToken(payload.token);
-        await syncProfile(payload.token);
-        setMessage(`${role === "vendor" ? "Vendor" : "Customer"} test sign-in completed. Session expires in 8 hours.`);
+        try { await syncProfile(payload.token); }
+        catch (error) { clearTestAccessToken(); throw error; }
+        setMessage(`${roleLabels[role]} test sign-in completed. Session expires in 8 hours.`);
         return;
       }
       const client = await getAuthClient();
@@ -149,19 +159,19 @@ export function AuthPanel({ role }: { role: Role }) {
     clearTestAccessToken();
     const client = await getAuthClient();
     await client?.auth.signOut();
-    setProfile(null); setMessage("Signed out securely.");
+    setProfile(null); onProfileChange?.(null); setMessage("Signed out securely.");
   };
 
   if (profile) return <section className="auth-live-card"><span><CheckCircle2 size={28} /></span><div><small>AUTHENTICATED {profile.role.toUpperCase()}</small><h3>{profile.name}</h3><p>{profile.email || profile.phone} · Account {profile.status}</p></div><button onClick={() => void signOut()} type="button"><LogOut size={16} /> Sign out</button></section>;
 
   return <section className="portal-panel auth-panel-live">
-    <div className="portal-panel-heading"><div><span className="portal-kicker">LIVE {role.toUpperCase()} ACCESS</span><h2>{mode === "register" ? `Create ${role} account` : `${role === "vendor" ? "Vendor" : "Customer"} login`}</h2><p>Supabase secures the account, Twilio sends phone OTPs, and verified email links return the user to URMED.</p></div><ShieldCheck size={23} /></div>
+    <div className="portal-panel-heading"><div><span className="portal-kicker">LIVE {role.toUpperCase()} ACCESS</span><h2>{mode === "register" ? `Create ${role} account` : `${roleLabels[role]} login`}</h2><p>{provisionedRole ? `${roleLabels[role]} access requires a pre-provisioned active profile. Public registration cannot create this role.` : "Supabase secures the account, Twilio sends phone OTPs, and verified email links return the user to URMED."}</p></div><ShieldCheck size={23} /></div>
     {!config?.supabase.ready && <div className="integration-warning"><KeyRound size={18} /><span><strong>Private integration setup</strong><small>The screens are ready. Connect the test keys to send real OTPs and verification emails.</small></span></div>}
-    <div className="auth-switch"><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} type="button">Register</button><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} type="button">Login</button></div>
-    <div className="auth-switch compact"><button className={method === "email" ? "active" : ""} onClick={() => setMethod("email")} type="button"><MailCheck size={14} /> Email</button><button className={method === "phone" ? "active" : ""} onClick={() => setMethod("phone")} type="button"><MessageSquareText size={14} /> Phone OTP</button></div>
-    <div className="test-credentials-card"><div><strong>{role === "vendor" ? "Vendor" : "Customer"} test account</strong><small>{role}@urmed.test · Urmed@Test2026!</small></div><button onClick={() => { setMode("login"); setMethod("email"); setEmail(`${role}@urmed.test`); setPassword("Urmed@Test2026!"); setMessage("Test credentials filled. Select Sign in securely."); }} type="button">Fill test credentials</button></div>
+    {!provisionedRole && <div className="auth-switch"><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} type="button">Register</button><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} type="button">Login</button></div>}
+    {!provisionedRole && <div className="auth-switch compact"><button className={method === "email" ? "active" : ""} onClick={() => setMethod("email")} type="button"><MailCheck size={14} /> Email</button><button className={method === "phone" ? "active" : ""} onClick={() => setMethod("phone")} type="button"><MessageSquareText size={14} /> Phone OTP</button></div>}
+    <div className="test-credentials-card"><div><strong>{roleLabels[role]} test account</strong><small>{role}@urmed.test · Urmed@Test2026!</small></div><button onClick={() => { setMode("login"); setMethod("email"); setEmail(`${role}@urmed.test`); setPassword("Urmed@Test2026!"); setMessage("Test credentials filled. Select Sign in securely."); }} type="button">Fill test credentials</button></div>
     {message && <div className="auth-message success">{message}</div>}{error && <div className="auth-message error">{error}</div>}
-    {method === "email" ? <form className="portal-form-grid one" onSubmit={submitEmail}>
+    {provisionedRole || method === "email" ? <form className="portal-form-grid one" onSubmit={submitEmail}>
       {mode === "register" && <><label className="portal-field"><span>{role === "vendor" ? "Owner name" : "Name"} *</span><input onChange={(event) => setName(event.target.value)} required value={name} /></label>{role === "vendor" && <><label className="portal-field"><span>Shop / business name *</span><input onChange={(event) => setBusinessName(event.target.value)} required value={businessName} /></label><label className="portal-field"><span>10-digit mobile number *</span><div className="phone-entry"><b>+91</b><input inputMode="numeric" maxLength={10} onChange={(event) => setPhone(event.target.value.replace(/\D/g, ""))} pattern="[0-9]{10}" required value={phone} /></div></label></>}</>}
       <label className="portal-field"><span>Email *</span><input autoComplete="email" onChange={(event) => setEmail(event.target.value)} required type="email" value={email} /></label>
       <label className="portal-field"><span>Password *</span><input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>

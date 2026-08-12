@@ -45,6 +45,8 @@ export const products = sqliteTable("products", {
   index("products_manufacturer_idx").on(table.manufacturer),
 ]);
 
+// Immutable legacy-import archive. This table is not an authentication or live
+// ownership source; operational customer records reference accountProfiles.
 export const customers = sqliteTable("customers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   legacyId: integer("legacy_id").notNull(),
@@ -265,6 +267,27 @@ export const inventoryReservations = sqliteTable("inventory_reservations", {
   index("inventory_reservations_order_status_idx").on(table.orderId, table.status),
   index("inventory_reservations_active_expiry_idx").on(table.status, table.expiresAt),
   index("inventory_reservations_inventory_status_idx").on(table.inventoryId, table.status),
+]);
+
+export const inventoryReservationRecoveryRuns = sqliteTable("inventory_reservation_recovery_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runKey: text("run_key").notNull(),
+  triggerSource: text("trigger_source", { enum: ["scheduled", "manual"] }).notNull().default("scheduled"),
+  scheduledAt: text("scheduled_at").notNull(),
+  status: text("status", { enum: ["running", "completed", "failed"] }).notNull().default("running"),
+  attempts: integer("attempts").notNull().default(1),
+  batchSize: integer("batch_size").notNull(),
+  maxBatches: integer("max_batches").notNull(),
+  batchesProcessed: integer("batches_processed").notNull().default(0),
+  ordersReleased: integer("orders_released").notNull().default(0),
+  reservationsReleased: integer("reservations_released").notNull().default(0),
+  remainingExpiredOrders: integer("remaining_expired_orders").notNull().default(0),
+  startedAt: text("started_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+  errorMessage: text("error_message").notNull().default(""),
+}, (table) => [
+  uniqueIndex("inventory_reservation_recovery_runs_key_uidx").on(table.runKey),
+  index("inventory_reservation_recovery_runs_started_idx").on(table.startedAt, table.status),
 ]);
 
 export const deliveryEvents = sqliteTable("delivery_events", {

@@ -1,7 +1,7 @@
-import { getD1 } from "../db/d1";
-import { getRequiredRuntimeValue } from "./runtime-env";
-import { sha256, TEST_TOKEN_PREFIX } from "./test-auth";
-export { errorResponse } from "./api-errors";
+import { getD1 } from "../db/d1.ts";
+import { getRequiredRuntimeValue } from "./runtime-env.ts";
+import { sha256, TEST_TOKEN_PREFIX } from "./test-auth.ts";
+export { errorResponse } from "./api-errors.ts";
 
 export type AuthUser = {
   id: string;

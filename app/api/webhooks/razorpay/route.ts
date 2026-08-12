@@ -1,6 +1,6 @@
 import { getD1 } from "../../../../db/d1";
 import { errorResponse } from "../../../../lib/auth-server";
-import { captureOnlineOrderPayment, InventoryReservationError } from "../../../../lib/inventory-reservations";
+import { captureOnlineOrderPayment, InventoryReservationError, prepareOrderReservationReleaseStatements } from "../../../../lib/inventory-reservations";
 import { getRequiredRuntimeValue } from "../../../../lib/runtime-env";
 import { constantTimeEqual, hmacHex, sha256Hex } from "../../../../lib/signatures";
 
@@ -39,7 +39,19 @@ export async function POST(request: Request) {
       }
     }
     if (order && eventType === "payment.failed") {
-      await db.prepare("UPDATE orders SET payment_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status <> 'paid'").bind(order.id).run();
+      try {
+        await db.batch([
+          ...prepareOrderReservationReleaseStatements(db, {
+            orderId: order.id,
+            status: "released",
+            reason: "Online payment failed",
+          }),
+          db.prepare("UPDATE orders SET payment_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status <> 'paid'").bind(order.id),
+        ]);
+      } catch (error) {
+        await db.prepare("DELETE FROM payment_events WHERE provider_event_id=?").bind(providerEventId).run();
+        throw error;
+      }
     }
     return Response.json({ received: true });
   } catch (error) {

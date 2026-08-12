@@ -232,6 +232,13 @@
       "when": 1786475495556,
       "tag": "0032_perfect_sunset_bain",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1786503229420,
+      "tag": "0033_material_amazoness",
+      "breakpoints": true
     }
   ]
 }

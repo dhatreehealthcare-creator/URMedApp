@@ -4,6 +4,7 @@ import { errorResponse, requireAuthUser } from "../../../../lib/auth-server";
 import { encryptSensitiveText } from "../../../../lib/encryption";
 import { requireVendorPermission, type VendorPermission } from "../../../../lib/vendor-access";
 import { requireIsoDate } from "../../../../lib/date-controls";
+import { validateVendorRegistration, VendorRegistrationValidationError } from "../../../../lib/vendor-registration";
 
 const licenceForms = new Set(["20", "21", "20B", "21B", "20F", "21F"]);
 const gstPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
@@ -85,7 +86,51 @@ export async function POST(request: Request) {
     const { profile, vendorId } = await requireVendorPermission(request, permission);
     const db = getD1();
 
-    if (action === "profile") {
+    if (action === "registration") {
+      let registration;
+      try {
+        registration = validateVendorRegistration(body);
+      } catch (error) {
+        if (error instanceof VendorRegistrationValidationError) return Response.json({ error: error.message }, { status: 400 });
+        throw error;
+      }
+      const authUser = await requireAuthUser(request);
+      const confirmedPhone = String(authUser.phone ?? "").replace(/\D/g, "").slice(-10);
+      if (!authUser.phone_confirmed_at || confirmedPhone !== registration.phone) {
+        return Response.json({ error: "Verify this phone number with OTP before submitting vendor registration" }, { status: 400 });
+      }
+      const duplicate = await db.prepare(`
+        SELECT id FROM account_profiles WHERE phone = ? AND id <> ?
+        UNION SELECT profile_id AS id FROM vendors WHERE phone = ? AND id <> ? LIMIT 1
+      `).bind(registration.phone, profile.id, registration.phone, vendorId).first();
+      if (duplicate) return Response.json({ error: "This phone number is already registered" }, { status: 409 });
+      const documentId = await verifiedVendorDocument(vendorId, registration.documentId, "drug_licence");
+      const before = await db.prepare("SELECT * FROM vendors WHERE id = ? LIMIT 1").bind(vendorId).first();
+      await db.batch([
+        db.prepare(`UPDATE vendors SET business_name=?,owner_name=?,phone=?,landline=?,gst_number=?,licence_number=?,
+          address=?,latitude=?,longitude=?,home_delivery=?,delivery_radius_km=?,
+          approval_status=CASE WHEN approval_status='approved' THEN approval_status ELSE 'pending' END,
+          compliance_status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .bind(registration.businessName, registration.ownerName, registration.phone, registration.landline,
+            registration.gstNumber, registration.licenceNumber, registration.address, registration.latitude,
+            registration.longitude, registration.homeDelivery ? 1 : 0, registration.deliveryRadiusKm, vendorId),
+        db.prepare("UPDATE account_profiles SET name=?,phone=?,phone_verified=1,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+          .bind(registration.ownerName, registration.phone, profile.id),
+        db.prepare(`INSERT INTO vendor_licences (vendor_id,licence_number,form_type,licence_category,issuing_authority,
+          issued_on,valid_from,valid_until,document_id,verification_status)
+          VALUES (?,?,?,'retail',?,?,?,?,?,'pending')
+          ON CONFLICT(vendor_id,licence_number) DO UPDATE SET form_type=excluded.form_type,
+            issuing_authority=excluded.issuing_authority,issued_on=excluded.issued_on,
+            valid_from=excluded.valid_from,valid_until=excluded.valid_until,document_id=excluded.document_id,
+            verification_status='pending',suspended_at=NULL,updated_at=CURRENT_TIMESTAMP`)
+          .bind(vendorId, registration.licenceNumber, registration.formType, registration.issuingAuthority,
+            registration.issuedOn, registration.validFrom, registration.validUntil, documentId),
+      ]);
+      await appendAuditEvent({
+        vendorId, actorProfileId: profile.id, action: "vendor.registration.submitted", entityType: "vendor",
+        entityId: vendorId, before, after: { ...registration, documentId }, requestId: request.headers.get("cf-ray") ?? "",
+      });
+    } else if (action === "profile") {
       const before = await db.prepare("SELECT * FROM vendors WHERE id = ? LIMIT 1").bind(vendorId).first();
       const businessName = text(body.businessName, 180);
       const ownerName = text(body.ownerName, 120);

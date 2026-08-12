@@ -1,6 +1,7 @@
 import { getD1 } from "../../../../../db/d1";
 import { appendAuditEvent } from "../../../../../lib/audit";
 import { errorResponse } from "../../../../../lib/auth-server";
+import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
 import { sendTransactionalEmail } from "../../../../../lib/resend";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
 
@@ -78,6 +79,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           .bind(profile.id, notes, prescriptionId),
       );
     } else {
+      const affectedOrders = await db.prepare(`SELECT id FROM orders WHERE prescription_id=? AND order_status<>'cancelled'`)
+        .bind(prescriptionId).all<{id:number}>();
+      for (const order of affectedOrders.results) statements.push(...prepareOrderReservationReleaseStatements(db, {
+        orderId: order.id,
+        status: "released",
+        reason: "Prescription rejected",
+      }));
       statements.push(
         db.prepare(`UPDATE pharmacy_inventory SET quantity = quantity + COALESCE((SELECT SUM(oi.quantity)
           FROM order_items oi JOIN orders o ON o.id = oi.order_id

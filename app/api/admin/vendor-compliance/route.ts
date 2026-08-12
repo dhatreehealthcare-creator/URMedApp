@@ -1,5 +1,7 @@
-import { getD1, isAuthorizedOwner } from "../../../../db/d1";
+import { getD1 } from "../../../../db/d1";
+import { requireAdminProfile } from "../../../../lib/admin-access";
 import { appendAuditEvent } from "../../../../lib/audit";
+import { errorResponse } from "../../../../lib/auth-server";
 
 async function listApplications() {
   const result = await getD1().prepare(`
@@ -32,17 +34,17 @@ async function listApplications() {
 }
 
 export async function GET(request: Request) {
-  if (!isAuthorizedOwner(request)) return Response.json({ error: "Owner authentication required" }, { status: 401 });
   try {
+    await requireAdminProfile(request);
     return Response.json(await listApplications(), { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Vendor applications are unavailable" }, { status: 500 });
+    return errorResponse(error);
   }
 }
 
 export async function POST(request: Request) {
-  if (!isAuthorizedOwner(request)) return Response.json({ error: "Owner authentication required" }, { status: 401 });
   try {
+    const profile = await requireAdminProfile(request);
     const body = await request.json() as Record<string, unknown>;
     const entity = String(body.entity ?? "");
     const decision = String(body.decision ?? "");
@@ -66,9 +68,9 @@ export async function POST(request: Request) {
     const approvalStatus = approved ? "approved" : decision === "rejected" ? "rejected" : "testing";
     await db.prepare(`UPDATE vendors SET compliance_status = ?, approval_status = ?, suspension_reason = ?,
       suspended_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(complianceStatus, approvalStatus, decision === "rejected" ? reason : "", record.vendorId).run();
-    await appendAuditEvent({ vendorId: record.vendorId, action: `admin.${entity}.${decision}`, entityType: entity === "licence" ? "vendor_licence" : "pharmacist", entityId: id, after: { decision, reason, complianceStatus, approvalStatus }, requestId: request.headers.get("cf-ray") ?? "" });
+    await appendAuditEvent({ vendorId: record.vendorId, actorProfileId: profile.id, action: `admin.${entity}.${decision}`, entityType: entity === "licence" ? "vendor_licence" : "pharmacist", entityId: id, after: { decision, reason, complianceStatus, approvalStatus }, requestId: request.headers.get("cf-ray") ?? "" });
     return Response.json({ saved: true, ...(await listApplications()) });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Compliance decision could not be saved" }, { status: 500 });
+    return errorResponse(error);
   }
 }

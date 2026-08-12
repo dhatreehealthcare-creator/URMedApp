@@ -2,6 +2,7 @@ import { getD1 } from "../../../../db/d1";
 import { appendAuditEvent } from "../../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../../lib/auth-server";
 import { requireVendorPermission } from "../../../../lib/vendor-access";
+import { releaseExpiredReservations } from "../../../../lib/inventory-reservations";
 import { completeSupplierReturn, listReturnablePurchases, PurchaseLifecycleError } from "../../../../lib/supplier-returns";
 
 export async function GET(request: Request) {
@@ -59,6 +60,7 @@ export async function POST(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["vendor"]); const vendorId = profile.vendorId!;
     const body = await request.json() as Record<string, unknown>; const action = String(body.action ?? ""); const db = getD1();
+    await releaseExpiredReservations(db);
     await requireVendorPermission(request, action === "supplier_return" ? "purchase.write" : ["offline_sale","return"].includes(action) ? "sale.write" : "inventory.write");
     if (action === "temperature") {
       const inventoryId = Number(body.inventoryId); const temperature = Number(body.temperatureCelsius);

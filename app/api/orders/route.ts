@@ -6,7 +6,7 @@ import { allocateFefo, calculateGst } from "../../../lib/order-controls";
 import { nextDeliveryStatuses, type DeliveryMethod, type WorkflowRole } from "../../../lib/order-workflow";
 import { sendTransactionalEmail } from "../../../lib/resend";
 import { haversineKm, isValidGeoPoint } from "../../../lib/geo";
-import { prepareOnlineOrderReservation, reservationExpiresAt } from "../../../lib/inventory-reservations";
+import { prepareOnlineOrderReservation, releaseExpiredReservations, reservationExpiresAt } from "../../../lib/inventory-reservations";
 
 type OrderItemInput = { inventoryId?: unknown; quantity?: unknown };
 type SelectedOffer = {
@@ -33,6 +33,7 @@ export async function GET(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
     const db = getD1();
+    await releaseExpiredReservations(db);
     let clause = "o.customer_profile_id = ?";
     let ownerId: number | string | null = profile.id;
     if (profile.role === "vendor") {
@@ -109,6 +110,7 @@ export async function POST(request: Request) {
     if ([...requestedByInventory.values()].some((quantity) => quantity > 100)) return Response.json({ error: "A medicine quantity cannot exceed 100 units" }, { status: 400 });
 
     const db = getD1();
+    await releaseExpiredReservations(db);
     const selected: Array<SelectedOffer & { requestedQuantity: number }> = [];
     for (const [inventoryId, requestedQuantity] of requestedByInventory) {
       const row = await db.prepare(`

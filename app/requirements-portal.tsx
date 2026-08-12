@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -33,13 +33,13 @@ import {
   Upload,
   UserRound,
 } from "lucide-react";
-import { AuthPanel } from "./auth-panel";
 import { LiveMarketplace } from "./live-marketplace";
 import { VendorSetup } from "./vendor-setup";
 import { VendorCompliance } from "./vendor-compliance";
 import { ProcurementCenter } from "./procurement-center";
 import { RefillCenter } from "./refill-center";
 import { AdminOperationsCenter, CustomerSafetyCenter, VendorOperationsCenter } from "./operations-centers";
+import { authenticatedFetch } from "./marketplace-client";
 
 type PortalRole = "vendor" | "customer" | "admin";
 type VendorSection = "overview" | "registration" | "profile" | "orders" | "sales" | "purchase" | "products" | "masters" | "reports";
@@ -69,62 +69,6 @@ function FormSuccess({ text }: { text: string }) {
   return <div className="portal-success"><CheckCircle2 size={18} /><span>{text}</span></div>;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function VendorRegistration() {
-  const [otpSent, setOtpSent] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const submit = (event: FormEvent) => { event.preventDefault(); setSubmitted(true); };
-  return <div className="portal-two-column">
-    <section className="portal-panel">
-      <div className="portal-panel-heading"><div><span className="portal-kicker">NEW VENDOR</span><h2>Register your pharmacy</h2><p>Fields marked * are mandatory. Contact and licence details are checked before activation.</p></div><span className="portal-step">Step 1 of 2</span></div>
-      {submitted && <FormSuccess text="Registration received. A verification link has been sent to the vendor’s email." />}
-      <form className="portal-form-grid" onSubmit={submit}>
-        <Field label="Shop / business name" required><input required placeholder="e.g. Sri Balaji Pharmacy" /></Field>
-        <Field label="Owner name" required><input required placeholder="Full legal name" /></Field>
-        <Field label="Phone" required hint="Exactly 10 digits; duplicate number validation enabled"><div className="field-action"><input inputMode="numeric" maxLength={10} minLength={10} pattern="[0-9]{10}" required placeholder="10-digit mobile" /><button onClick={() => setOtpSent(true)} type="button">{otpSent ? "OTP sent" : "Send OTP"}</button></div></Field>
-        <Field label="Landline" hint="10 digits including STD code"><input inputMode="numeric" maxLength={10} pattern="[0-9]{10}" placeholder="Landline number" /></Field>
-        <Field label="Email" required hint="Checked against existing registrations"><input required type="email" placeholder="owner@pharmacy.com" /></Field>
-        <Field label="Password" required><input minLength={8} required type="password" placeholder="Minimum 8 characters" /></Field>
-        <Field label="GST number"><input maxLength={15} placeholder="15-character GSTIN" /></Field>
-        <Field label="Drug licence" required hint="JPG, JPEG, PNG, PDF, DOC or DOCX"><div className="file-control"><Upload size={17} /><span>Choose licence file</span><input accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" required type="file" /></div></Field>
-        <Field label="Registered address" required wide hint="Stored privately; not displayed to customers"><textarea required rows={3} placeholder="Complete shop address" /></Field>
-        <Field label="Latitude" required><input required type="number" step="any" defaultValue="17.4318" /></Field>
-        <Field label="Longitude" required><input required type="number" step="any" defaultValue="78.4073" /></Field>
-        <button className="portal-primary wide" type="submit">Register pharmacy <ChevronRight size={17} /></button>
-      </form>
-    </section>
-    <aside className="verification-journey">
-      <span className="journey-icon"><ShieldCheck size={26} /></span><h3>Secure verification journey</h3>
-      <ol><li className="done"><b>1</b><span><strong>Phone OTP</strong><small>Mobile ownership and duplicate check</small></span></li><li><b>2</b><span><strong>Email verification</strong><small>Secure link sent after registration</small></span></li><li><b>3</b><span><strong>Licence review</strong><small>Admin verifies uploaded drug licence</small></span></li><li><b>4</b><span><strong>Automatic sign-in</strong><small>Vendor enters the approved workspace</small></span></li></ol>
-      <div className="portal-note"><MailCheck size={18} /><span><strong>Already registered?</strong><small>Use vendor login. Unverified accounts receive a fresh verification link.</small></span></div>
-      <form className="compact-login" onSubmit={(event) => event.preventDefault()}><h4>Vendor login</h4><input required type="email" placeholder="Registered email" /><input required type="password" placeholder="Password" /><button type="submit">Sign in securely</button></form>
-    </aside>
-  </div>;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function VendorProfile() {
-  const [saved, setSaved] = useState(false);
-  return <div className="portal-stack">
-    {saved && <FormSuccess text="Vendor profile and banking information updated." />}
-    <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">VENDOR PROFILE</span><h2>Pharmacy details</h2><p>The registered email remains read-only. Address coordinates are private.</p></div><span className="verification-badge"><Check size={14} /> Email verified</span></div>
-      <form className="portal-form-grid" onSubmit={(event) => { event.preventDefault(); setSaved(true); }}>
-        <Field label="Shop / business name" required><input defaultValue="Sri Balaji Pharmacy" required /></Field><Field label="Owner name" required><input defaultValue="Arun Sharma" required /></Field>
-        <Field label="Phone" required><div className="field-action"><input defaultValue="9848012312" maxLength={10} pattern="[0-9]{10}" required /><button type="button">Verify OTP</button></div></Field><Field label="Landline" hint="Exactly 10 digits"><input defaultValue="0404012345" maxLength={10} minLength={10} pattern="[0-9]{10}" /></Field>
-        <Field label="Email"><input defaultValue="owner@sribalaji.in" readOnly /></Field><Field label="GST number"><input defaultValue="36ABCDE1234F1Z5" /></Field>
-        <Field label="Drug licence" required><div className="file-control"><FileText size={17} /><span>DL-TS-HYD-2025.pdf</span><input accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" type="file" /></div></Field>
-        <Field label="Home delivery"><select defaultValue="yes"><option value="yes">Yes</option><option value="no">No</option></select></Field>
-        <Field label="Registered address" wide required><textarea defaultValue="Road No. 36, Jubilee Hills, Hyderabad, Telangana 500033" required rows={3} /></Field><Field label="Latitude" required><input defaultValue="17.4318" required /></Field><Field label="Longitude" required><input defaultValue="78.4073" required /></Field>
-        <button className="portal-primary wide" type="submit">Save profile changes</button>
-      </form>
-    </section>
-    <div className="portal-split">
-      <section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Bank details</h2><p>Used for marketplace settlements.</p></div><Landmark size={20} /></div><form className="portal-form-grid" onSubmit={(event) => { event.preventDefault(); setSaved(true); }}><Field label="Bank name"><input defaultValue="HDFC Bank" /></Field><Field label="Account name"><input defaultValue="Sri Balaji Pharmacy" /></Field><Field label="Account number"><input defaultValue="502000XXXX123" /></Field><Field label="IFSC code"><input defaultValue="HDFC0001234" /></Field><button className="portal-secondary wide" type="submit">Update bank details</button></form></section>
-      <section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Change password</h2><p>Use a strong password not used elsewhere.</p></div><LockKeyhole size={20} /></div><form className="portal-form-grid one" onSubmit={(event) => { event.preventDefault(); setSaved(true); }}><Field label="Current password"><input required type="password" /></Field><Field label="New password"><input minLength={8} required type="password" /></Field><Field label="Confirm new password"><input minLength={8} required type="password" /></Field><button className="portal-secondary wide" type="submit">Change password</button></form></section>
-    </div>
-  </div>;
-}
-
 function VendorOverview({ setSection }: { setSection: (section: VendorSection) => void }) {
   return <><div className="portal-metrics"><article><span className="green"><BadgeIndianRupee size={21} /></span><div><small>Today’s total sales</small><strong>₹42,680</strong><em>Online ₹17,820 · Offline ₹24,860</em></div></article><article><span className="blue"><ShoppingBag size={21} /></span><div><small>Marketplace orders</small><strong>18</strong><em>6 require confirmation</em></div></article><article><span className="amber"><Boxes size={21} /></span><div><small>Zero / low stock</small><strong>23</strong><em>8 zero-stock medicines</em></div></article><article><span className="red"><CalendarClock size={21} /></span><div><small>Near expiry</small><strong>11</strong><em>Within the next 3 months</em></div></article></div>
     <div className="portal-dashboard-grid"><section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Priority actions</h2><p>Items that need attention today.</p></div></div><div className="priority-list"><button onClick={() => setSection("orders")} type="button"><ShoppingBag size={18} /><span><strong>6 online orders</strong><small>Awaiting pharmacist confirmation</small></span><ChevronRight size={17} /></button><button onClick={() => setSection("reports")} type="button"><AlertTriangle size={18} /><span><strong>11 batches near expiry</strong><small>Expiry within 90 days</small></span><ChevronRight size={17} /></button><button onClick={() => setSection("purchase")} type="button"><PackagePlus size={18} /><span><strong>8 products at zero stock</strong><small>Create a purchase order</small></span><ChevronRight size={17} /></button></div></section><section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Sales mix</h2><p>Today’s collection by channel.</p></div></div><div className="sales-donut"><div><span>₹42.7K</span><small>Total</small></div></div><div className="legend-row"><span><i className="online" />Online 42%</span><span><i className="offline" />Offline 58%</span></div></section></div>
@@ -145,8 +89,8 @@ function ReportsView() {
 }
 
 function CustomerPortal({ section }: { section: CustomerSection }) {
-  const [saved, setSaved] = useState(false);
-  if (section === "account") return <div className="portal-split">{saved && <FormSuccess text="Customer registration completed. OTP and email verification initiated." />}<section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">NEW CUSTOMER</span><h2>Create an URMED account</h2><p>Register to order medicines, save addresses and receive pill reminders.</p></div></div><form className="portal-form-grid one" onSubmit={(event) => { event.preventDefault(); setSaved(true); }}><Field label="Name" required><input required /></Field><Field label="Phone" required hint="OTP and duplicate validation"><div className="field-action"><input maxLength={10} minLength={10} pattern="[0-9]{10}" required /><button type="button">Send OTP</button></div></Field><Field label="Email" required><input required type="email" /></Field><Field label="Password" required><input minLength={8} required type="password" /></Field><button className="portal-primary wide" type="submit">Register customer</button></form></section><section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">CUSTOMER LOGIN</span><h2>Welcome back</h2><p>Unverified accounts receive a new email verification link.</p></div></div><form className="portal-form-grid one" onSubmit={(event) => event.preventDefault()}><Field label="Email"><input required type="email" /></Field><Field label="Password"><input required type="password" /></Field><button className="portal-secondary wide" type="submit">Sign in</button></form><div className="portal-note"><MailCheck size={18} /><span><strong>Email verification required</strong><small>Verified customers are automatically signed in after opening the secure link.</small></span></div></section></div>;
+  const [, setSaved] = useState(false);
+  if (section === "account") return <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">AUTHENTICATED CUSTOMER</span><h2>Your protected account</h2><p>This workspace is available only while the active customer session matches the `/customer` route.</p></div><ShieldCheck size={22} /></div><div className="portal-note"><CheckCircle2 size={18} /><span><strong>Customer session verified</strong><small>Orders, purchase history, saved delivery details, and pill reminders remain scoped to this account by the server APIs.</small></span></div></section>;
   if (section === "orders") return <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">CUSTOMER ORDER</span><h2>Delivery and prescription</h2><p>Search and cart remain available in the marketplace. Confirm delivery details here.</p></div></div><form className="portal-form-grid" onSubmit={(event) => { event.preventDefault(); setSaved(true); }}><Field label="Name" required><input defaultValue="Ananya Reddy" required /></Field><Field label="Phone" required><input defaultValue="9848012315" maxLength={10} required /></Field><Field label="Delivery address" wide required><textarea defaultValue="Road No. 45, Jubilee Hills, Hyderabad" rows={3} /></Field><Field label="Latitude"><input defaultValue="17.4325" /></Field><Field label="Longitude"><input defaultValue="78.4071" /></Field><Field label="Fulfilment"><select><option>Home delivery</option><option>Pickup from pharmacy</option></select></Field><Field label="Prescription upload"><div className="file-control"><Upload size={17} /><span>Upload prescription</span><input accept=".jpg,.jpeg,.png,.pdf" type="file" /></div></Field><button className="portal-primary wide" type="submit">Save delivery details</button></form></section>;
   if (section === "history") return <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">PURCHASE HISTORY</span><h2>Previous orders</h2><p>Reorder eligible medicines and download invoices.</p></div></div><div className="history-cards"><article><span><PackageCheck size={20} /></span><div><strong>#UR1042 · Delivered</strong><small>5 Aug 2026 · Dolo 650, Shelcal 500</small><em>₹187.30 · Online payment</em></div><button type="button">Reorder</button></article><article><span><Store size={20} /></span><div><strong>#UR1018 · Picked up</strong><small>24 Jul 2026 · Telma 40</small><em>₹198.40 · Paid online</em></div><button type="button">Invoice</button></article></div></section>;
   return <div className="portal-stack"><RefillCenter /><CustomerSafetyCenter /></div>;
@@ -155,8 +99,16 @@ function CustomerPortal({ section }: { section: CustomerSection }) {
 type RecoveryPayload = {
   counts: { products: number; customers: number; categories: number; manufacturers: number };
   audit: Array<{ entity: string; sourceRows: number; importedRows: number; rejectedRows: number; notes: string }>;
-  customers: Array<{ legacyId: number; name: string; email: string; mobile: string; registeredAt: string | null; passwordResetRequired: number }>;
-  security: { legacyPasswordsImported: boolean; customerAccess: string; passwordResetRequired: boolean };
+  customers: Array<{ legacyId: number; name: string; email: string; mobile: string; registeredAt: string | null }>;
+  identityPolicy: {
+    credentialAuthority: "supabase_auth";
+    liveProfileAuthority: "account_profiles";
+    recoveredCustomerClassification: "admin_only_reference";
+    recoveredCustomersCanAuthenticate: false;
+    automaticLinking: false;
+    linkingStatus: "not_implemented";
+  };
+  security: { legacyPasswordsImported: boolean; recoveredRecordsCanAuthenticate: boolean; customerAccess: string; automaticLinking: boolean };
 };
 
 function RecoveredDataCard() {
@@ -167,8 +119,8 @@ function RecoveredDataCard() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/recovery", { cache: "no-store" });
-      if (!response.ok) throw new Error(response.status === 401 ? "Owner authentication is required to view recovered customers." : "Recovery database is unavailable.");
+      const response = await authenticatedFetch("/api/admin/recovery", { cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 401 ? "Administrator authentication is required to view recovered customers." : "Recovery database is unavailable.");
       setData(await response.json() as RecoveryPayload);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Recovery database is unavailable.");
@@ -184,8 +136,8 @@ function RecoveredDataCard() {
   return <section className="portal-panel recovered-data-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">RECOVERED SQL BACKUP</span><h2>Migration control centre</h2><p>Verified import totals from the February 2025 URMED database backup.</p></div><button className="portal-outline" onClick={() => void load()} type="button"><RefreshCw size={15} /> Refresh</button></div>
     {loading && <div className="recovery-loading"><span className="catalogue-loader" /> Reading the secured URMED database…</div>}
     {error && <div className="recovery-error"><AlertTriangle size={18} /><span><strong>Protected data unavailable</strong><small>{error}</small></span></div>}
-    {data && <><div className="recovery-counts"><article><Database size={20} /><span><small>Recovered products</small><strong>{data.counts.products.toLocaleString("en-IN")}</strong></span></article><article><UserRound size={20} /><span><small>Verified customers</small><strong>{data.counts.customers}</strong></span></article><article><Building2 size={20} /><span><small>Manufacturers</small><strong>{data.counts.manufacturers.toLocaleString("en-IN")}</strong></span></article><article><Pill size={20} /><span><small>Categories</small><strong>{data.counts.categories}</strong></span></article></div>
-      <div className="recovery-grid"><div><h3>Customer recovery</h3><p className="secure-recovery-note"><ShieldCheck size={16} /> Legacy passwords were not imported. Every recovered customer must create a new password.</p><div className="recovered-customers">{data.customers.map((customer) => <article key={customer.legacyId}><span>{customer.name.slice(0, 2).toUpperCase()}</span><div><strong>{customer.name}</strong><small>{customer.email} · {customer.mobile}</small><em>Registered {customer.registeredAt?.slice(0, 10) || "date unavailable"} · Reset required</em></div></article>)}</div></div><div><h3>Import audit</h3><div className="migration-audit">{data.audit.map((row) => <article key={row.entity}><div><strong>{row.entity}</strong><span>{row.importedRows.toLocaleString("en-IN")} imported</span></div><small>{row.sourceRows.toLocaleString("en-IN")} source · {row.rejectedRows.toLocaleString("en-IN")} rejected</small><p>{row.notes}</p></article>)}</div></div></div></>}
+    {data && <><div className="recovery-counts"><article><Database size={20} /><span><small>Recovered products</small><strong>{data.counts.products.toLocaleString("en-IN")}</strong></span></article><article><UserRound size={20} /><span><small>Legacy references</small><strong>{data.counts.customers}</strong></span></article><article><Building2 size={20} /><span><small>Manufacturers</small><strong>{data.counts.manufacturers.toLocaleString("en-IN")}</strong></span></article><article><Pill size={20} /><span><small>Categories</small><strong>{data.counts.categories}</strong></span></article></div>
+      <div className="recovery-grid"><div><h3>Legacy customer archive</h3><p className="secure-recovery-note"><ShieldCheck size={16} /> Reference only: these records cannot sign in and are not automatically linked by email or phone. Live customer identity comes from account profiles.</p><div className="recovered-customers">{data.customers.map((customer) => <article key={customer.legacyId}><span>{customer.name.slice(0, 2).toUpperCase()}</span><div><strong>{customer.name}</strong><small>{customer.email} · {customer.mobile}</small><em>Registered {customer.registeredAt?.slice(0, 10) || "date unavailable"} · No live account link</em></div></article>)}</div></div><div><h3>Import audit</h3><div className="migration-audit">{data.audit.map((row) => <article key={row.entity}><div><strong>{row.entity}</strong><span>{row.importedRows.toLocaleString("en-IN")} imported</span></div><small>{row.sourceRows.toLocaleString("en-IN")} source · {row.rejectedRows.toLocaleString("en-IN")} rejected</small><p>{row.notes}</p></article>)}</div></div></div></>}
   </section>;
 }
 
@@ -204,7 +156,7 @@ function DatabaseArchitecture() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/architecture", { cache: "no-store" });
+      const response = await authenticatedFetch("/api/admin/architecture", { cache: "no-store" });
       const payload = await response.json() as ArchitecturePayload & { error?: string };
       if (!response.ok) throw new Error(payload.error || "Database architecture status is unavailable");
       setData(payload);
@@ -240,7 +192,7 @@ function AdminPortal({ section }: { section: AdminSection }) {
 }
 
 export function RequirementsPortal({ initialRole, onBack }: { initialRole: PortalRole; onBack: () => void }) {
-  const [role, setRole] = useState<PortalRole>(initialRole);
+  const role = initialRole;
   const [vendorSection, setVendorSection] = useState<VendorSection>(initialRole === "vendor" ? "overview" : "overview");
   const [customerSection, setCustomerSection] = useState<CustomerSection>("account");
   const [adminSection, setAdminSection] = useState<AdminSection>("overview");
@@ -249,9 +201,9 @@ export function RequirementsPortal({ initialRole, onBack }: { initialRole: Porta
   const roleTitle = role === "vendor" ? "Vendor workspace" : role === "customer" ? "Customer account" : "URMED administration";
   let content: React.ReactNode;
   if (role === "vendor") {
-    content = vendorSection === "overview" ? <div className="portal-stack"><VendorOverview setSection={setVendorSection} /><LiveMarketplace role="vendor" /></div> : vendorSection === "registration" ? <div className="portal-stack"><AuthPanel role="vendor" /><VendorSetup registrationMode /></div> : vendorSection === "profile" ? <VendorSetup /> : vendorSection === "orders" ? <div className="portal-stack"><LiveMarketplace role="vendor" /><OrdersView /></div> : vendorSection === "sales" ? <VendorOperationsCenter /> : vendorSection === "purchase" ? <ProcurementCenter mode="purchase" /> : vendorSection === "products" ? <div className="portal-stack"><LiveMarketplace role="vendor" /><ProductMaster /></div> : vendorSection === "masters" ? <ProcurementCenter mode="masters" /> : <ReportsView />;
-  } else if (role === "customer") content = customerSection === "account" ? <AuthPanel role="customer" /> : customerSection === "orders" || customerSection === "history" ? <LiveMarketplace role="customer" /> : <CustomerPortal section={customerSection} />;
+    content = vendorSection === "overview" ? <div className="portal-stack"><VendorOverview setSection={setVendorSection} /><LiveMarketplace role="vendor" /></div> : vendorSection === "registration" ? <VendorSetup registrationMode /> : vendorSection === "profile" ? <VendorSetup /> : vendorSection === "orders" ? <div className="portal-stack"><LiveMarketplace role="vendor" /><OrdersView /></div> : vendorSection === "sales" ? <VendorOperationsCenter /> : vendorSection === "purchase" ? <ProcurementCenter mode="purchase" /> : vendorSection === "products" ? <div className="portal-stack"><LiveMarketplace role="vendor" /><ProductMaster /></div> : vendorSection === "masters" ? <ProcurementCenter mode="masters" /> : <ReportsView />;
+  } else if (role === "customer") content = customerSection === "orders" || customerSection === "history" ? <LiveMarketplace role="customer" /> : <CustomerPortal section={customerSection} />;
   else content = <AdminPortal section={adminSection} />;
 
-  return <main className="requirements-shell"><aside className="requirements-sidebar"><button className="brand sidebar-brand" onClick={onBack} type="button"><span className="brand-mark"><Pill size={21} /></span><span>ur<span>med</span></span></button><div className="portal-role-card"><span>{role === "vendor" ? <Store size={18} /> : role === "customer" ? <UserRound size={18} /> : <ShieldCheck size={18} />}</span><div><small>Current workspace</small><strong>{roleTitle}</strong></div></div><nav className="requirements-nav">{portalNavigation[role].map(([key, label, Icon]) => <button className={section === key ? "active" : ""} key={key} onClick={() => setSection(key)} type="button"><Icon size={17} /><span>{label}</span></button>)}</nav><div className="role-switch"><small>Private testing role</small><div>{(["vendor", "customer", "admin"] as PortalRole[]).map((item) => <button className={role === item ? "active" : ""} key={item} onClick={() => setRole(item)} type="button">{item}</button>)}</div></div><button className="back-marketplace" onClick={onBack} type="button"><ArrowLeft size={17} /> Back to marketplace</button></aside><section className="requirements-main"><header className="requirements-header"><div><span className="portal-kicker">{role.toUpperCase()} MODULE</span><h1>{roleTitle}</h1><p>URMED Pharmacy & Medicine Delivery · Private test mode</p></div><div><button aria-label="Notifications" type="button"><BellRing size={18} /><b>3</b></button><button type="button"><UserRound size={18} /> {role === "vendor" ? "VE" : role === "admin" ? "AD" : "CU"}</button></div></header>{content}</section></main>;
+  return <main className="requirements-shell"><aside className="requirements-sidebar"><button className="brand sidebar-brand" onClick={onBack} type="button"><span className="brand-mark"><Pill size={21} /></span><span>ur<span>med</span></span></button><div className="portal-role-card"><span>{role === "vendor" ? <Store size={18} /> : role === "customer" ? <UserRound size={18} /> : <ShieldCheck size={18} />}</span><div><small>Current workspace</small><strong>{roleTitle}</strong></div></div><nav className="requirements-nav">{portalNavigation[role].map(([key, label, Icon]) => <button className={section === key ? "active" : ""} key={key} onClick={() => setSection(key)} type="button"><Icon size={17} /><span>{label}</span></button>)}</nav><button className="back-marketplace" onClick={onBack} type="button"><ArrowLeft size={17} /> Back to marketplace</button></aside><section className="requirements-main"><header className="requirements-header"><div><span className="portal-kicker">{role.toUpperCase()} MODULE</span><h1>{roleTitle}</h1><p>URMED Pharmacy & Medicine Delivery</p></div><div><button aria-label="Notifications" type="button"><BellRing size={18} /><b>3</b></button><button type="button"><UserRound size={18} /> {role === "vendor" ? "VE" : role === "admin" ? "AD" : "CU"}</button></div></header>{content}</section></main>;
 }

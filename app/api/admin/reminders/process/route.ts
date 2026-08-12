@@ -1,14 +1,14 @@
-import { getD1, isAuthorizedOwner } from "../../../../../db/d1";
+import { getD1 } from "../../../../../db/d1";
+import { requireAdminProfile } from "../../../../../lib/admin-access";
 import { appendAuditEvent } from "../../../../../lib/audit";
-import { errorResponse, requireLocalProfile, type LocalProfile } from "../../../../../lib/auth-server";
+import { errorResponse, type LocalProfile } from "../../../../../lib/auth-server";
 import { sendTransactionalEmail } from "../../../../../lib/resend";
 
 async function authorize(request: Request): Promise<LocalProfile | null> {
   const configuredSecret = process.env.REMINDER_JOB_SECRET ?? "";
   const suppliedSecret = request.headers.get("x-urmed-job-secret") ?? "";
   if (configuredSecret && suppliedSecret === configuredSecret) return null;
-  try { return (await requireLocalProfile(request,["admin"])).profile; }
-  catch(error){if(isAuthorizedOwner(request))return null;throw error;}
+  return requireAdminProfile(request);
 }
 
 type DueRefill={id:number;profileId:number;email:string;medicineName:string;dueDate:string;vendorId:number};

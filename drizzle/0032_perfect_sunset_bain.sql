@@ -72,7 +72,8 @@ END;--> statement-breakpoint
 CREATE TRIGGER `inventory_reservation_transition_guard`
 BEFORE UPDATE OF status ON `inventory_reservations`
 WHEN NEW.status<>OLD.status
-	AND (OLD.status<>'active' OR NEW.status NOT IN ('committed','released','expired'))
+	AND (OLD.status<>'active' OR NEW.status NOT IN ('committed','released','expired')
+		OR (NEW.status IN ('released','expired') AND NEW.released_at IS NULL))
 BEGIN
 	SELECT RAISE(ABORT, 'reservation_invalid_transition');
 END;--> statement-breakpoint

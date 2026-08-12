@@ -14,12 +14,14 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  triggers: { crons: ["*/5 * * * *"] },
   d1_databases: d1
     ? [
         {
           binding: d1,
           database_name: "site-creator-d1",
           database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          migrations_dir: "../.openai/drizzle",
         },
       ]
     : [],

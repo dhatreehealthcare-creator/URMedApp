@@ -2,6 +2,7 @@ import { getD1 } from "../../../db/d1";
 import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
 import { effectiveRefillStatus, validateRefillDate } from "../../../lib/refill-engine";
+import { releaseExpiredReservations } from "../../../lib/inventory-reservations";
 
 type RefillRow = {
   id: number; medicineName: string; originalQuantity: number; daysSupply: number; dueDate: string;
@@ -14,7 +15,9 @@ type RefillRow = {
 export async function GET(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["customer"]);
-    const rows = await getD1().prepare(`
+    const db = getD1();
+    await releaseExpiredReservations(db);
+    const rows = await db.prepare(`
       SELECT r.id, r.medicine_name AS medicineName, r.original_quantity AS originalQuantity,
         r.days_supply AS daysSupply, r.due_date AS dueDate, r.reminder_lead_days AS reminderLeadDays,
         r.status, r.snoozed_until AS snoozedUntil, r.schedule_source AS scheduleSource,
