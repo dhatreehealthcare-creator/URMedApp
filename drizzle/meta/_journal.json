@@ -239,6 +239,13 @@
       "when": 1786503229420,
       "tag": "0033_material_amazoness",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1786534542920,
+      "tag": "0034_little_sunfire",
+      "breakpoints": true
     }
   ]
 }

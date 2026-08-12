@@ -387,6 +387,10 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
 .auth-live-card small { color: var(--teal); font-size: 7px; font-weight: 900; letter-spacing: .12em; }
 .auth-live-card h3 { margin: 4px 0 2px; font-size: 15px; }
 .auth-live-card p { margin: 0; color: var(--muted); font-size: 8px; }
+.auth-live-card .identity-state-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.auth-live-card .identity-state-list span { padding: 4px 7px; border-radius: 999px; font-size: 7px; font-weight: 800; }
+.auth-live-card .identity-state-list .complete { color: #17684f; background: #dff4ed; }
+.auth-live-card .identity-state-list .pending { color: #8b5a13; background: #fff0cf; }
 .auth-live-card button, .live-toolbar button { min-height: 36px; padding: 0 12px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid #bdd8d2; border-radius: 10px; color: var(--teal); background: #fff; font-size: 8px; font-weight: 850; cursor: pointer; }
 .phone-entry { min-height: 39px; display: grid; grid-template-columns: auto 1fr; align-items: center; overflow: hidden; border: 1px solid #dbe5e2; border-radius: 10px; background: #fcfdfd; }
 .phone-entry b { padding: 0 10px; color: var(--teal-dark); border-right: 1px solid #dbe5e2; font-size: 9px; }

@@ -1,8 +1,8 @@
 import { getD1 } from "../../../../db/d1";
 import { appendAuditEvent } from "../../../../lib/audit";
-import { errorResponse, requireAuthUser } from "../../../../lib/auth-server";
+import { errorResponse } from "../../../../lib/auth-server";
 import { encryptSensitiveText } from "../../../../lib/encryption";
-import { requireVendorPermission, type VendorPermission } from "../../../../lib/vendor-access";
+import { requireVendorOnboardingAccess, requireVendorPermission, type VendorPermission } from "../../../../lib/vendor-access";
 import { requireIsoDate } from "../../../../lib/date-controls";
 import { validateVendorRegistration, VendorRegistrationValidationError } from "../../../../lib/vendor-registration";
 
@@ -40,7 +40,8 @@ async function loadSetup(vendorId: number) {
       v.email, v.gst_number AS gstNumber, v.address, v.latitude, v.longitude,
       v.home_delivery AS homeDelivery, v.approval_status AS approvalStatus,
       v.compliance_status AS complianceStatus, v.delivery_radius_km AS deliveryRadiusKm,
-      p.phone_verified AS phoneVerified
+      v.registration_status AS registrationStatus, v.registration_submitted_at AS registrationSubmittedAt,
+      p.email_verified AS emailVerified, p.phone_verified AS phoneVerified
     FROM vendors v LEFT JOIN account_profiles p ON p.id = v.profile_id WHERE v.id = ? LIMIT 1
   `).bind(vendorId).first();
   const bank = await db.prepare(`
@@ -71,7 +72,7 @@ async function loadSetup(vendorId: number) {
 
 export async function GET(request: Request) {
   try {
-    const { vendorId } = await requireVendorPermission(request, "profile.manage");
+    const { vendorId } = await requireVendorOnboardingAccess(request);
     return Response.json(await loadSetup(vendorId), { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return errorResponse(error);
@@ -82,8 +83,13 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
     const action = text(body.action, 40);
-    const permission: VendorPermission = action === "bank" ? "accounts.write" : action === "profile" ? "profile.manage" : "licence.manage";
-    const { profile, vendorId } = await requireVendorPermission(request, permission);
+    const access = action === "registration"
+      ? await requireVendorOnboardingAccess(request)
+      : await requireVendorPermission(
+        request,
+        action === "bank" ? "accounts.write" : action === "profile" ? "profile.manage" : "licence.manage" satisfies VendorPermission,
+      );
+    const { profile, vendorId } = access;
     const db = getD1();
 
     if (action === "registration") {
@@ -94,9 +100,10 @@ export async function POST(request: Request) {
         if (error instanceof VendorRegistrationValidationError) return Response.json({ error: error.message }, { status: 400 });
         throw error;
       }
-      const authUser = await requireAuthUser(request);
-      const confirmedPhone = String(authUser.phone ?? "").replace(/\D/g, "").slice(-10);
-      if (!authUser.phone_confirmed_at || confirmedPhone !== registration.phone) {
+      if (!profile.emailVerified) {
+        return Response.json({ error: "Verify the account email before submitting vendor registration" }, { status: 400 });
+      }
+      if (!profile.phoneVerified || profile.phone !== registration.phone) {
         return Response.json({ error: "Verify this phone number with OTP before submitting vendor registration" }, { status: 400 });
       }
       const duplicate = await db.prepare(`
@@ -107,15 +114,16 @@ export async function POST(request: Request) {
       const documentId = await verifiedVendorDocument(vendorId, registration.documentId, "drug_licence");
       const before = await db.prepare("SELECT * FROM vendors WHERE id = ? LIMIT 1").bind(vendorId).first();
       await db.batch([
-        db.prepare(`UPDATE vendors SET business_name=?,owner_name=?,phone=?,landline=?,gst_number=?,licence_number=?,
+        db.prepare(`UPDATE vendors SET business_name=?,owner_name=?,phone=?,email=?,landline=?,gst_number=?,licence_number=?,
           address=?,latitude=?,longitude=?,home_delivery=?,delivery_radius_km=?,
+          registration_status='submitted',registration_submitted_at=COALESCE(registration_submitted_at,CURRENT_TIMESTAMP),
           approval_status=CASE WHEN approval_status='approved' THEN approval_status ELSE 'pending' END,
           compliance_status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-          .bind(registration.businessName, registration.ownerName, registration.phone, registration.landline,
+          .bind(registration.businessName, registration.ownerName, registration.phone, profile.email, registration.landline,
             registration.gstNumber, registration.licenceNumber, registration.address, registration.latitude,
             registration.longitude, registration.homeDelivery ? 1 : 0, registration.deliveryRadiusKm, vendorId),
-        db.prepare("UPDATE account_profiles SET name=?,phone=?,phone_verified=1,updated_at=CURRENT_TIMESTAMP WHERE id=?")
-          .bind(registration.ownerName, registration.phone, profile.id),
+        db.prepare("UPDATE account_profiles SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+          .bind(registration.ownerName, profile.id),
         db.prepare(`INSERT INTO vendor_licences (vendor_id,licence_number,form_type,licence_category,issuing_authority,
           issued_on,valid_from,valid_until,document_id,verification_status)
           VALUES (?,?,?,'retail',?,?,?,?,?,'pending')
@@ -145,9 +153,7 @@ export async function POST(request: Request) {
       if (!/^\d{10}$/.test(phone)) return Response.json({ error: "Phone must contain exactly 10 digits" }, { status: 400 });
       if (landline && !/^\d{10}$/.test(landline)) return Response.json({ error: "Landline must contain exactly 10 digits" }, { status: 400 });
       if (gstNumber && !gstPattern.test(gstNumber)) return Response.json({ error: "GSTIN format is invalid" }, { status: 400 });
-      const authUser = await requireAuthUser(request);
-      const confirmedPhone = String(authUser.phone ?? "").replace(/\D/g, "").slice(-10);
-      if (!authUser.phone_confirmed_at || confirmedPhone !== phone) return Response.json({ error: "Verify this phone number with OTP before saving the pharmacy profile" }, { status: 400 });
+      if (!profile.phoneVerified || profile.phone !== phone) return Response.json({ error: "Verify this phone number with OTP before saving the pharmacy profile" }, { status: 400 });
       const lat = Number(latitude); const lon = Number(longitude);
       if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) return Response.json({ error: "Valid latitude and longitude are required" }, { status: 400 });
       const duplicate = await db.prepare(`
@@ -159,7 +165,7 @@ export async function POST(request: Request) {
         db.prepare(`UPDATE vendors SET business_name = ?, owner_name = ?, phone = ?, landline = ?, gst_number = ?,
           address = ?, latitude = ?, longitude = ?, home_delivery = ?, delivery_radius_km = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
           .bind(businessName, ownerName, phone, landline, gstNumber, address, latitude, longitude, body.homeDelivery ? 1 : 0, deliveryRadiusKm, vendorId),
-        db.prepare("UPDATE account_profiles SET name = ?, phone = ?, phone_verified = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ownerName, phone, profile.id),
+        db.prepare("UPDATE account_profiles SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ownerName, profile.id),
       ]);
       await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "vendor.profile.updated", entityType: "vendor", entityId: vendorId, before, after: { businessName, ownerName, phone, landline, gstNumber, address, latitude, longitude, homeDelivery: Boolean(body.homeDelivery), deliveryRadiusKm }, requestId: request.headers.get("cf-ray") ?? "" });
     } else if (action === "bank") {

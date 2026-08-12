@@ -22,12 +22,19 @@ INSERT INTO account_profiles
 VALUES
   ('test:customer-two', 'customer', 'P009 Second Customer', 'customer-two@urmed.test', '0000000011', 1, 1, 'active'),
   ('test:vendor-two', 'vendor', 'P009 Second Vendor', 'vendor-two@urmed.test', '0000000012', 1, 1, 'active'),
+  ('test:vendor-operational-two', 'vendor', 'P009 Other Operational Vendor', 'vendor-operational-two@urmed.test', '0000000014', 1, 1, 'active'),
+  ('test:vendor-email-pending', 'vendor', 'P102 Email Pending Vendor', 'vendor-email-pending@urmed.test', '0000000015', 0, 1, 'active'),
+  ('test:vendor-phone-pending', 'vendor', 'P102 Phone Pending Vendor', 'vendor-phone-pending@urmed.test', '0000000016', 1, 0, 'active'),
+  ('test:vendor-both-pending', 'vendor', 'P102 Both Pending Vendor', 'vendor-both-pending@urmed.test', '0000000017', 0, 0, 'active'),
   ('test:inactive', 'customer', 'P009 Inactive Customer', 'inactive@urmed.test', '0000000013', 1, 1, 'inactive');
 
-INSERT INTO test_accounts (profile_id, email, password_sha256, active)
-SELECT id, email, '82653beae118d41e23e29c582a86f50675468ed1b588c284704a7a3491e32184', 1
+INSERT INTO test_accounts (profile_id, email, phone, email_confirmed, phone_confirmed, password_sha256, active)
+SELECT id, email, phone, email_verified, phone_verified, '82653beae118d41e23e29c582a86f50675468ed1b588c284704a7a3491e32184', 1
 FROM account_profiles
-WHERE auth_user_id IN ('test:customer-two', 'test:vendor-two', 'test:inactive');
+WHERE auth_user_id IN (
+  'test:customer-two', 'test:vendor-two', 'test:vendor-operational-two',
+  'test:vendor-email-pending', 'test:vendor-phone-pending', 'test:vendor-both-pending', 'test:inactive'
+);
 
 INSERT INTO test_sessions (test_account_id, token_hash, expires_at)
 SELECT account.id, '0b01f7032dd263e352e2392ec03b52010a89e10280f9d0ee0e3e4716d5a5097b', datetime('now', '+8 hours')
@@ -36,11 +43,27 @@ WHERE account.email = 'inactive@urmed.test';
 
 INSERT INTO vendors
   (profile_id, business_name, owner_name, phone, email, gst_number, licence_number,
-   address, latitude, longitude, home_delivery, approval_status, compliance_status, delivery_radius_km)
+   address, latitude, longitude, home_delivery, registration_status, registration_submitted_at,
+   approval_status, compliance_status, delivery_radius_km)
 SELECT id, 'P009 Second Pharmacy', name, phone, email, '36ABCDE1234F1Z6', 'P009-DL-SECOND',
-  'Second integration pharmacy', '17.4318', '78.4073', 1, 'draft', 'pending', 10
+  'Second integration pharmacy', '17.4318', '78.4073', 1, 'draft', NULL, 'draft', 'pending', 10
 FROM account_profiles
 WHERE auth_user_id = 'test:vendor-two';
+
+INSERT INTO vendors
+  (profile_id, business_name, owner_name, phone, email, gst_number, licence_number,
+   address, latitude, longitude, home_delivery, registration_status, registration_submitted_at,
+   approval_status, compliance_status, delivery_radius_km)
+SELECT id, 'P009 Other Operational Pharmacy', name, phone, email, '', 'P009-DL-OTHER',
+  'Other integration pharmacy', '17.4518', '78.4273', 1, 'submitted', CURRENT_TIMESTAMP, 'approved', 'verified', 10
+FROM account_profiles
+WHERE auth_user_id = 'test:vendor-operational-two';
+
+INSERT INTO vendors
+  (profile_id, business_name, owner_name, phone, email, registration_status, approval_status, compliance_status)
+SELECT id, name || ' Pharmacy', name, phone, email, 'draft', 'draft', 'pending'
+FROM account_profiles
+WHERE auth_user_id IN ('test:vendor-email-pending', 'test:vendor-phone-pending', 'test:vendor-both-pending');
 
 INSERT INTO pharmacists
   (vendor_id, profile_id, full_name, council_name, registration_number, valid_from, valid_until,

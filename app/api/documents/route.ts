@@ -2,7 +2,7 @@ import { getD1 } from "../../../db/d1";
 import { getR2 } from "../../../db/storage";
 import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
-import { requireVendorPermission } from "../../../lib/vendor-access";
+import { requireVendorOnboardingAccess, requireVendorPermission } from "../../../lib/vendor-access";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const allowedPurposes = new Set(["drug_licence", "pharmacist_registration", "prescription", "delivery_proof"]);
@@ -29,7 +29,7 @@ async function sha256Hex(buffer: ArrayBuffer) {
 export async function POST(request: Request) {
   let objectKey = "";
   try {
-    const { profile } = await requireLocalProfile(request, ["customer", "vendor", "delivery"]);
+    const { profile } = await requireLocalProfile(request, ["customer", "vendor", "delivery"], { allowIncompleteVendor: true });
     const form = await request.formData();
     const file = form.get("file");
     const purpose = String(form.get("purpose") ?? "").trim();
@@ -48,7 +48,9 @@ export async function POST(request: Request) {
     let vendorId: number | null = null;
     if (purpose === "drug_licence" || purpose === "pharmacist_registration") {
       if (profile.role !== "vendor") return Response.json({ error: "Only a pharmacy may upload this document" }, { status: 403 });
-      vendorId = (await requireVendorPermission(request, "licence.manage")).vendorId;
+      vendorId = purpose === "drug_licence"
+        ? (await requireVendorOnboardingAccess(request)).vendorId
+        : (await requireVendorPermission(request, "licence.manage")).vendorId;
     } else if (purpose === "prescription" && profile.role !== "customer") {
       return Response.json({ error: "Only a customer may upload a prescription" }, { status: 403 });
     }

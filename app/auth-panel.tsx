@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { CheckCircle2, KeyRound, LogOut, MailCheck, MessageSquareText, ShieldCheck } from "lucide-react";
-import { isWorkspaceRoleAuthorized, type WorkspaceProfile, type WorkspaceRole } from "../lib/role-access";
+import { isRoleSessionAuthorized, type WorkspaceProfile, type WorkspaceRole } from "../lib/role-access";
 import { clearTestAccessToken, getAuthClient, getRuntimeConfig, getTestAccessToken, setTestAccessToken, type RuntimeConfig } from "./marketplace-client";
 
 const roleLabels: Record<WorkspaceRole, string> = {
@@ -42,7 +42,7 @@ export function AuthPanel({ role, onProfileChange }: { role: WorkspaceRole; onPr
     }
     if (!response.ok) throw new Error(payload.error || "URMED profile could not be loaded");
     const nextProfile = payload.profile ?? null;
-    if (nextProfile && !isWorkspaceRoleAuthorized(nextProfile, role)) throw new Error(`Sign in with an active ${role} account to continue`);
+    if (nextProfile && !isRoleSessionAuthorized(nextProfile, role)) throw new Error(`Sign in with an active ${role} account to continue`);
     setProfile(nextProfile);
     onProfileChange?.(nextProfile);
   }, [onProfileChange, provisionedRole, role]);
@@ -129,6 +129,7 @@ export function AuthPanel({ role, onProfileChange }: { role: WorkspaceRole; onPr
     setBusy(true); setError(""); setMessage("");
     try {
       if (!/^\d{10}$/.test(phone)) throw new Error("Enter a valid 10-digit Indian mobile number");
+      if (mode === "register" && role === "vendor") throw new Error("Create the vendor email and password account first, then verify its mobile number during onboarding");
       if (mode === "register" && !name.trim()) throw new Error("Enter the account holder name first");
       if (mode === "register" && role === "vendor" && !businessName.trim()) throw new Error("Enter the shop or business name first");
       const client = await getAuthClient();
@@ -162,13 +163,16 @@ export function AuthPanel({ role, onProfileChange }: { role: WorkspaceRole; onPr
     setProfile(null); onProfileChange?.(null); setMessage("Signed out securely.");
   };
 
-  if (profile) return <section className="auth-live-card"><span><CheckCircle2 size={28} /></span><div><small>AUTHENTICATED {profile.role.toUpperCase()}</small><h3>{profile.name}</h3><p>{profile.email || profile.phone} · Account {profile.status}</p></div><button onClick={() => void signOut()} type="button"><LogOut size={16} /> Sign out</button></section>;
+  if (profile) {
+    const vendorState = profile.role === "vendor" ? profile.vendorAccessStatus : null;
+    return <section className="auth-live-card"><span><CheckCircle2 size={28} /></span><div><small>AUTHENTICATED {profile.role.toUpperCase()}</small><h3>{profile.name}</h3><p>{profile.email || profile.phone} · Account {profile.status}</p>{profile.role === "vendor" && <div className="identity-state-list"><span className={profile.emailVerified ? "complete" : "pending"}>{profile.emailVerified ? "Email verified" : "Email verification pending"}</span><span className={profile.phoneVerified ? "complete" : "pending"}>{profile.phoneVerified ? "Phone verified" : "Phone verification pending"}</span><span className={vendorState === "operational" ? "complete" : "pending"}>{vendorState === "registration_draft" ? "Registration draft" : vendorState === "review_pending" ? "Registration submitted · administrator review pending" : vendorState === "operational" ? "Operational access approved" : "Identity verification incomplete"}</span></div>}</div><button onClick={() => void signOut()} type="button"><LogOut size={16} /> Sign out</button></section>;
+  }
 
   return <section className="portal-panel auth-panel-live">
     <div className="portal-panel-heading"><div><span className="portal-kicker">LIVE {role.toUpperCase()} ACCESS</span><h2>{mode === "register" ? `Create ${role} account` : `${roleLabels[role]} login`}</h2><p>{provisionedRole ? `${roleLabels[role]} access requires a pre-provisioned active profile. Public registration cannot create this role.` : "Supabase secures the account, Twilio sends phone OTPs, and verified email links return the user to URMED."}</p></div><ShieldCheck size={23} /></div>
     {!config?.supabase.ready && <div className="integration-warning"><KeyRound size={18} /><span><strong>Private integration setup</strong><small>The screens are ready. Connect the test keys to send real OTPs and verification emails.</small></span></div>}
-    {!provisionedRole && <div className="auth-switch"><button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} type="button">Register</button><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} type="button">Login</button></div>}
-    {!provisionedRole && <div className="auth-switch compact"><button className={method === "email" ? "active" : ""} onClick={() => setMethod("email")} type="button"><MailCheck size={14} /> Email</button><button className={method === "phone" ? "active" : ""} onClick={() => setMethod("phone")} type="button"><MessageSquareText size={14} /> Phone OTP</button></div>}
+    {!provisionedRole && <div className="auth-switch"><button className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); if (role === "vendor") setMethod("email"); }} type="button">Register</button><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} type="button">Login</button></div>}
+    {!provisionedRole && <div className="auth-switch compact"><button className={method === "email" ? "active" : ""} onClick={() => setMethod("email")} type="button"><MailCheck size={14} /> Email</button>{(role !== "vendor" || mode === "login") && <button className={method === "phone" ? "active" : ""} onClick={() => setMethod("phone")} type="button"><MessageSquareText size={14} /> Phone OTP</button>}</div>}
     <div className="test-credentials-card"><div><strong>{roleLabels[role]} test account</strong><small>{role}@urmed.test · Urmed@Test2026!</small></div><button onClick={() => { setMode("login"); setMethod("email"); setEmail(`${role}@urmed.test`); setPassword("Urmed@Test2026!"); setMessage("Test credentials filled. Select Sign in securely."); }} type="button">Fill test credentials</button></div>
     {message && <div className="auth-message success">{message}</div>}{error && <div className="auth-message error">{error}</div>}
     {provisionedRole || method === "email" ? <form className="portal-form-grid one" onSubmit={submitEmail}>

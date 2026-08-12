@@ -82,6 +82,9 @@ test("authenticated vendor onboarding uses one four-step registration submission
   assert.match(component, /save\("registration"/);
   assert.match(route, /action === "registration"/);
   assert.match(route, /vendor\.registration\.submitted/);
+  assert.match(route, /registration_status='submitted'/);
+  assert.match(route, /!profile\.emailVerified/);
+  assert.match(route, /!profile\.phoneVerified/);
   assert.match(route, /approval_status=CASE WHEN approval_status='approved'/);
 });
 

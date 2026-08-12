@@ -1,12 +1,13 @@
 import { getD1 } from "../../../../db/d1";
-import { errorResponse, getLocalProfile, requireAuthUser } from "../../../../lib/auth-server";
+import { errorResponse, getLocalProfile, requireAuthUser, synchronizeProviderIdentity } from "../../../../lib/auth-server";
+import { providerVerificationState } from "../../../../lib/identity-verification";
 
 const roles = new Set(["customer", "vendor"]);
 
 export async function GET(request: Request) {
   try {
     const user = await requireAuthUser(request);
-    const profile = await getLocalProfile(user.id);
+    const profile = await synchronizeProviderIdentity(user);
     return Response.json({ user: { id: user.id, email: user.email ?? "", phone: user.phone ?? "" }, profile });
   } catch (error) {
     return errorResponse(error);
@@ -27,10 +28,11 @@ export async function POST(request: Request) {
     const businessName = String(body.businessName ?? user.user_metadata?.business_name ?? "").trim().slice(0, 180);
     if (!name) return Response.json({ error: "Name is required" }, { status: 400 });
     if (role === "vendor" && !businessName) return Response.json({ error: "Shop or business name is required" }, { status: 400 });
-    const email = (user.email ?? "").trim().toLowerCase();
-    const rawPhone = (user.phone ?? String(body.phone ?? "")).replace(/\D/g, "");
-    const phone = rawPhone.length > 10 ? rawPhone.slice(-10) : rawPhone;
-    if (role === "vendor" && !/^\d{10}$/.test(phone)) return Response.json({ error: "Vendor phone must contain exactly 10 digits" }, { status: 400 });
+    const provider = providerVerificationState(user);
+    const { email, phone } = provider;
+    if (role === "vendor" && !email) {
+      return Response.json({ error: "Vendor registration requires an email and password account before phone OTP verification" }, { status: 400 });
+    }
     const db = getD1();
     if (email) {
       const duplicateEmail = await db.prepare("SELECT id FROM account_profiles WHERE lower(email) = ? AND auth_user_id <> ? LIMIT 1").bind(email, user.id).first();
@@ -47,7 +49,7 @@ export async function POST(request: Request) {
         name = excluded.name, email = excluded.email, phone = excluded.phone,
         email_verified = excluded.email_verified, phone_verified = excluded.phone_verified,
         updated_at = CURRENT_TIMESTAMP
-    `).bind(user.id, role, name, email, phone, user.email_confirmed_at ? 1 : 0, user.phone_confirmed_at ? 1 : 0).run();
+    `).bind(user.id, role, name, email, phone, provider.emailVerified ? 1 : 0, provider.phoneVerified ? 1 : 0).run();
     const profile = await getLocalProfile(user.id);
     if (profile?.role === "vendor" && !profile.vendorId) {
       await db.prepare(`

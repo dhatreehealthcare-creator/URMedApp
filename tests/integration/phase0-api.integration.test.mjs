@@ -133,6 +133,7 @@ export async function runPhase0IntegrationSuite() {
     context.tokens.admin = await login("admin@urmed.test");
     context.tokens.customerTwo = await login("customer-two@urmed.test");
     context.tokens.vendorTwo = await login("vendor-two@urmed.test");
+    context.tokens.vendorOperationalTwo = await login("vendor-operational-two@urmed.test");
 
     await expectStatus(api("/api/orders"), 401, "unauthenticated order list");
     await expectStatus(api("/api/admin/operations", { token: context.tokens.customer }), 403, "customer admin access");
@@ -166,6 +167,53 @@ export async function runPhase0IntegrationSuite() {
     context.vendorId = vendorOperations.payload.inventory.find((row) => row.id === context.inventoryId)?.vendorId ?? 1;
   });
 
+  await scenario("provider claims gate vendor onboarding and synchronize idempotently", async () => {
+    const emailPending = await login("vendor-email-pending@urmed.test");
+    const phonePending = await login("vendor-phone-pending@urmed.test");
+    const bothPending = await login("vendor-both-pending@urmed.test");
+    const emailPendingProfile = await expectStatus(api("/api/auth/profile", { token: emailPending }), 200, "email pending profile");
+    assert.equal(emailPendingProfile.payload.profile.identityVerificationStatus, "email_pending");
+    assert.equal(emailPendingProfile.payload.profile.vendorAccessStatus, "email_pending");
+    const phonePendingProfile = await expectStatus(api("/api/auth/profile", { token: phonePending }), 200, "phone pending profile");
+    assert.equal(phonePendingProfile.payload.profile.identityVerificationStatus, "phone_pending");
+    assert.equal(phonePendingProfile.payload.profile.vendorAccessStatus, "phone_pending");
+    const bothPendingProfile = await expectStatus(api("/api/auth/profile", { token: bothPending }), 200, "both pending profile");
+    assert.equal(bothPendingProfile.payload.profile.identityVerificationStatus, "email_and_phone_pending");
+    await expectStatus(api("/api/vendor/operations", { token: emailPending }), 403, "unverified email operations");
+    await expectStatus(api("/api/vendor/operations", { token: phonePending }), 403, "unverified phone operations");
+    await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendorTwo }), 403, "draft vendor operations");
+
+    for (const [token, label] of [[emailPending, "email"], [phonePending, "phone"], [bothPending, "both"]]) {
+      const setup = await expectStatus(api("/api/vendor/setup", { token }), 200, `${label} pending onboarding`);
+      await expectStatus(api("/api/vendor/setup", {
+        token,
+        json: {
+          action: "registration",
+          businessName: "Verification Gate Pharmacy",
+          ownerName: "Verification Gate Owner",
+          phone: setup.payload.vendor.phone,
+          address: "Private verification gate address",
+          latitude: "17.4318",
+          longitude: "78.4073",
+          licenceNumber: "P102-GATE",
+          formType: "20B",
+          issuingAuthority: "Drugs Control Administration",
+          validFrom: isoDate(-1),
+          validUntil: isoDate(365),
+          documentId: 900009,
+          emailVerified: true,
+          phoneVerified: true,
+        },
+      }), 400, `${label} pending registration rejection`);
+    }
+
+    const firstSync = await expectStatus(api("/api/auth/profile", { token: context.tokens.vendorTwo }), 200, "first verified state sync");
+    const secondSync = await expectStatus(api("/api/auth/profile", { token: context.tokens.vendorTwo }), 200, "second verified state sync");
+    assert.deepEqual(firstSync.payload.profile, secondSync.payload.profile);
+    assert.equal(secondSync.payload.profile.identityVerificationStatus, "verified");
+    assert.equal(secondSync.payload.profile.vendorAccessStatus, "registration_draft");
+  });
+
   await scenario("vendor registration submits business, private location, and licence as one review package", async () => {
     const setupBefore = await expectStatus(api("/api/vendor/setup", { token: context.tokens.vendorTwo }), 200, "load vendor registration");
     const licence = new FormData();
@@ -197,6 +245,10 @@ export async function runPhase0IntegrationSuite() {
       token: context.tokens.vendorTwo,
       json: { ...registration, latitude: "91" },
     }), 400, "invalid private vendor location");
+    await expectStatus(api("/api/vendor/setup", {
+      token: context.tokens.vendorTwo,
+      json: { ...registration, phone: "9999999999" },
+    }), 400, "mismatched provider-confirmed phone");
     const saved = await expectStatus(api("/api/vendor/setup", { token: context.tokens.vendorTwo, json: registration }), 200, "submit vendor registration");
     assert.equal(saved.payload.saved, true);
     assert.equal(saved.payload.vendor.businessName, registration.businessName);
@@ -204,7 +256,11 @@ export async function runPhase0IntegrationSuite() {
     assert.equal(saved.payload.vendor.latitude, registration.latitude);
     assert.equal(saved.payload.vendor.longitude, registration.longitude);
     assert.equal(saved.payload.vendor.homeDelivery, 1);
+    assert.equal(saved.payload.vendor.registrationStatus, "submitted");
     assert.ok(saved.payload.licences.some((row) => row.licenceNumber === registration.licenceNumber && row.verificationStatus === "pending"));
+    const pendingReview = await expectStatus(api("/api/auth/profile", { token: context.tokens.vendorTwo }), 200, "submitted vendor review state");
+    assert.equal(pendingReview.payload.profile.vendorAccessStatus, "review_pending");
+    await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendorTwo }), 403, "pending-review vendor operations");
     const downloaded = await expectStatus(api(`/api/documents/${context.vendorRegistrationDocumentId}`, { token: context.tokens.vendorTwo }), 200, "download submitted vendor licence");
     assert.deepEqual(Buffer.from(downloaded.bytes), png);
   });
@@ -239,7 +295,7 @@ export async function runPhase0IntegrationSuite() {
     context.purchaseItemId = returnable.purchaseOrderItemId;
 
     await expectStatus(api("/api/vendor/operations", {
-      token: context.tokens.vendorTwo,
+      token: context.tokens.vendorOperationalTwo,
       json: { action: "supplier_return", purchaseOrderItemId: context.purchaseItemId, quantity: 1, reason: "Cross tenant return attempt" },
     }), 404, "cross-vendor supplier return");
     await expectStatus(api("/api/vendor/operations", {
@@ -306,7 +362,7 @@ export async function runPhase0IntegrationSuite() {
       json: { status: "cancelled", note: "Customer requested cancellation" },
     }), 200, "repeated cancellation")).payload.unchanged, true);
     assert.equal(inventoryRow((await inventoryMine()).payload, context.inventoryId).reservedQuantity, 0);
-    await expectStatus(api(`/api/orders/${context.successfulOrderId}/tracking`, { token: context.tokens.vendorTwo }), 404, "cross-vendor order access");
+    await expectStatus(api(`/api/orders/${context.successfulOrderId}/tracking`, { token: context.tokens.vendorOperationalTwo }), 404, "cross-vendor order access");
     await expectStatus(api(`/api/orders/${context.successfulOrderId}/tracking`, { token: context.tokens.customerTwo }), 404, "cross-customer order access");
 
     const rejected = await createOnlineOrder(2, 900009, 900009);
@@ -355,7 +411,7 @@ export async function runPhase0IntegrationSuite() {
     const downloaded = await expectStatus(api(`/api/documents/${context.documentId}`, { token: context.tokens.customer }), 200, "owner R2 download");
     assert.deepEqual(Buffer.from(downloaded.bytes), png);
     await expectStatus(api(`/api/documents/${context.documentId}`, { token: context.tokens.customerTwo }), 404, "other customer document access");
-    await expectStatus(api(`/api/documents/${context.documentId}`, { token: context.tokens.vendorTwo }), 404, "other vendor document access");
+    await expectStatus(api(`/api/documents/${context.documentId}`, { token: context.tokens.vendorOperationalTwo }), 404, "other vendor document access");
     for (const [filename, mime, bytes] of [
       ["bad-extension.txt", "text/plain", png],
       ["mime-mismatch.png", "image/jpeg", png],

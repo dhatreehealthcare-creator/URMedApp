@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { randomTestToken, sha256, TEST_TOKEN_PREFIX } from "../lib/test-auth.ts";
 
@@ -12,4 +13,11 @@ test("test sessions use unpredictable prefixed tokens", () => {
   assert.ok(first.startsWith(TEST_TOKEN_PREFIX));
   assert.ok(first.length > 50);
   assert.notEqual(first, second);
+});
+
+test("test sessions obtain provider verification claims only from explicit fixture columns", () => {
+  const auth = readFileSync(new URL("../lib/auth-server.ts", import.meta.url), "utf8");
+  assert.match(auth, /account\.email_confirmed AS emailConfirmed/);
+  assert.match(auth, /account\.phone_confirmed AS phoneConfirmed/);
+  assert.doesNotMatch(auth, /testUser\.email_confirmed_at/);
 });

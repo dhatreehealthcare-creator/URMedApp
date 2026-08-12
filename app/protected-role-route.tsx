@@ -3,10 +3,11 @@
 import { useCallback, useState } from "react";
 import { ArrowLeft, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { isWorkspaceRoleAuthorized, type WorkspaceProfile, type WorkspaceRole } from "../lib/role-access";
+import { isRoleSessionAuthorized, isWorkspaceRoleAuthorized, type WorkspaceProfile, type WorkspaceRole } from "../lib/role-access";
 import { AuthPanel } from "./auth-panel";
 import { DeliveryOperationsCenter } from "./operations-centers";
 import { RequirementsPortal } from "./requirements-portal";
+import { VendorSetup } from "./vendor-setup";
 
 const workspaceLabels: Record<WorkspaceRole, string> = {
   vendor: "Vendor workspace",
@@ -17,9 +18,10 @@ const workspaceLabels: Record<WorkspaceRole, string> = {
 
 export function ProtectedRoleRoute({ role }: { role: WorkspaceRole }) {
   const [profile, setProfile] = useState<WorkspaceProfile | null>(null);
+  const sessionAuthorized = isRoleSessionAuthorized(profile, role);
   const authorized = isWorkspaceRoleAuthorized(profile, role);
   const updateProfile = useCallback((nextProfile: WorkspaceProfile | null) => {
-    setProfile(isWorkspaceRoleAuthorized(nextProfile, role) ? nextProfile : null);
+    setProfile(isRoleSessionAuthorized(nextProfile, role) ? nextProfile : null);
   }, [role]);
 
   return <div className={`protected-route protected-route-${role}`}>
@@ -30,6 +32,7 @@ export function ProtectedRoleRoute({ role }: { role: WorkspaceRole }) {
       </div>
       <AuthPanel role={role} onProfileChange={updateProfile} />
     </section>
+    {sessionAuthorized && role === "vendor" && !authorized && <main className="vendor-onboarding-route-main"><VendorSetup registrationMode /></main>}
     {authorized && (role === "delivery"
       ? <main className="delivery-route-main"><DeliveryOperationsCenter /></main>
       : <RequirementsPortal initialRole={role} onBack={() => window.location.assign("/")} />)}

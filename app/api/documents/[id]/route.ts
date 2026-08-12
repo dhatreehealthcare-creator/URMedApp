@@ -17,7 +17,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       FROM stored_documents WHERE id = ? LIMIT 1
     `).bind(id).first<DocumentRow>();
     if (!row || row.status !== "active") return Response.json({ error: "Document not found" }, { status: 404 });
-    const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
+    const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"], { allowIncompleteVendor: true });
     const allowed = row.ownerProfileId === profile.id || (row.vendorId && row.vendorId === profile.vendorId) || profile.role === "admin";
     if (!allowed) return Response.json({ error: "Document not found" }, { status: 404 });
     const object = await getR2().get(row.objectKey);
