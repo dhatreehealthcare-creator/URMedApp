@@ -1,5 +1,5 @@
-import { getD1 } from "../db/d1";
-import { sha256Hex } from "./signatures";
+import { getD1 } from "../db/d1.ts";
+import { sha256Hex } from "./signatures.ts";
 
 type AuditInput = {
   vendorId?: number | null;
@@ -18,8 +18,8 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
 }
 
-export async function appendAuditEvent(input: AuditInput) {
-  const db = getD1();
+export async function appendAuditEvent(input: AuditInput, database?: D1Database) {
+  const db = database ?? getD1();
   const vendorId = input.vendorId ?? null;
   const previous = await db.prepare(`
     SELECT event_hash AS eventHash FROM audit_events

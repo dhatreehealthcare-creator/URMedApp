@@ -2,6 +2,7 @@ import { getD1 } from "../../../db/d1";
 import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse } from "../../../lib/auth-server";
 import { asPositiveInteger, rupeesToPaise } from "../../../lib/money";
+import { LEGACY_RECEIVED_PURCHASE_STATUS, PURCHASE_STATUS } from "../../../lib/purchase-status";
 import { requireVendorPermission } from "../../../lib/vendor-access";
 
 const gstRates = new Set([0, 5, 12, 18, 28]);
@@ -43,12 +44,13 @@ async function loadPurchases(vendorId: number) {
     db.prepare(`
       SELECT po.id, po.purchase_number AS purchaseNumber, po.invoice_number AS invoiceNumber,
         po.invoice_date AS invoiceDate, po.subtotal_paise AS subtotalPaise, po.tax_paise AS taxPaise,
-        po.total_paise AS totalPaise, po.payment_status AS paymentStatus, po.status,
+        po.total_paise AS totalPaise, po.payment_status AS paymentStatus,
+        CASE WHEN po.status = ? THEN ? ELSE po.status END AS status,
         po.posted_at AS postedAt, s.business_name AS supplierName, COUNT(poi.id) AS lineCount
       FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
       LEFT JOIN purchase_order_items poi ON poi.purchase_order_id = po.id
       WHERE po.vendor_id = ? GROUP BY po.id, s.business_name ORDER BY po.invoice_date DESC, po.id DESC LIMIT 100
-    `).bind(vendorId),
+    `).bind(LEGACY_RECEIVED_PURCHASE_STATUS, PURCHASE_STATUS.RECEIVED, vendorId),
     db.prepare(`
       SELECT id, account_code AS accountCode, entry_date AS entryDate, description,
         debit_paise AS debitPaise, credit_paise AS creditPaise,
@@ -85,7 +87,7 @@ export async function POST(request: Request) {
     const supplier = await db.prepare("SELECT id, business_name AS businessName FROM suppliers WHERE id = ? AND vendor_id = ? AND status = 'active' LIMIT 1").bind(supplierId, vendorId).first<{ id: number; businessName: string }>();
     if (!supplier) return Response.json({ error: "Choose an active supplier belonging to this pharmacy" }, { status: 400 });
     const duplicate = await db.prepare("SELECT id FROM purchase_orders WHERE vendor_id = ? AND supplier_id = ? AND invoice_number = ? LIMIT 1").bind(vendorId, supplierId, invoiceNumber).first();
-    if (duplicate) return Response.json({ error: "This supplier invoice has already been posted" }, { status: 409 });
+    if (duplicate) return Response.json({ error: "This supplier invoice has already been received" }, { status: 409 });
 
     const items: PurchaseInput[] = [];
     const batchKeys = new Set<string>();
@@ -130,8 +132,8 @@ export async function POST(request: Request) {
     const statements = [
       db.prepare(`INSERT INTO purchase_orders (purchase_number, vendor_id, supplier_id, invoice_number, invoice_date,
         subtotal_paise, tax_paise, total_paise, payment_status, status, created_by_profile_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', 'posting', ?)`)
-        .bind(purchaseNumber, vendorId, supplierId, invoiceNumber, invoiceDate, subtotalPaise, taxPaise, totalPaise, profile.id),
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`)
+        .bind(purchaseNumber, vendorId, supplierId, invoiceNumber, invoiceDate, subtotalPaise, taxPaise, totalPaise, PURCHASE_STATUS.POSTING, profile.id),
     ];
     for (const item of items) {
       statements.push(
@@ -170,7 +172,7 @@ export async function POST(request: Request) {
         reference_type, reference_id, created_by_profile_id)
         SELECT ?, 'ACCOUNTS_PAYABLE', ?, ?, 0, ?, 'purchase_order', id, ? FROM purchase_orders WHERE purchase_number = ?`)
         .bind(vendorId, invoiceDate, `Payable to ${supplier.businessName} · ${invoiceNumber}`, totalPaise, profile.id, purchaseNumber),
-      db.prepare("UPDATE purchase_orders SET status = 'received', posted_at = CURRENT_TIMESTAMP WHERE purchase_number = ?").bind(purchaseNumber),
+      db.prepare("UPDATE purchase_orders SET status = ?, posted_at = CURRENT_TIMESTAMP WHERE purchase_number = ?").bind(PURCHASE_STATUS.RECEIVED, purchaseNumber),
     );
     await db.batch(statements);
     const saved = await db.prepare("SELECT id FROM purchase_orders WHERE purchase_number = ? LIMIT 1").bind(purchaseNumber).first<{ id: number }>();

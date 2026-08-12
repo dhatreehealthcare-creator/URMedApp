@@ -6,6 +6,7 @@ import { allocateFefo, calculateGst } from "../../../lib/order-controls";
 import { nextDeliveryStatuses, type DeliveryMethod, type WorkflowRole } from "../../../lib/order-workflow";
 import { sendTransactionalEmail } from "../../../lib/resend";
 import { haversineKm, isValidGeoPoint } from "../../../lib/geo";
+import { prepareOnlineOrderReservation, releaseExpiredReservations, reservationExpiresAt } from "../../../lib/inventory-reservations";
 
 type OrderItemInput = { inventoryId?: unknown; quantity?: unknown };
 type SelectedOffer = {
@@ -23,7 +24,8 @@ type OrderListRow = {
   id: number; orderNumber: string; subtotalPaise: number; taxPaise: number; deliveryFeePaise: number; totalPaise: number;
   paymentMethod: string; paymentStatus: string; deliveryMethod: DeliveryMethod; orderStatus: string; deliveryStatus: string;
   prescriptionId: number | null; prescriptionStatus: string; customerName: string; deliveryAddress: string;
-  placeOfSupplyStateCode: string; createdAt: string; businessName: string; items: string;
+  placeOfSupplyStateCode: string; inventoryStatus: string; reservationExpiresAt: string | null;
+  createdAt: string; businessName: string; items: string;
 };
 type TrackingEventRow = { orderId: number; status: string; note: string; latitude: string; longitude: string; createdAt: string; actorName: string; actorRole: string };
 
@@ -31,6 +33,7 @@ export async function GET(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
     const db = getD1();
+    await releaseExpiredReservations(db);
     let clause = "o.customer_profile_id = ?";
     let ownerId: number | string | null = profile.id;
     if (profile.role === "vendor") {
@@ -56,6 +59,7 @@ export async function GET(request: Request) {
         o.delivery_status AS deliveryStatus, o.prescription_id AS prescriptionId,
         o.prescription_status AS prescriptionStatus, o.customer_name AS customerName,
         o.delivery_address AS deliveryAddress, o.place_of_supply_state_code AS placeOfSupplyStateCode,
+        o.inventory_status AS inventoryStatus, o.reservation_expires_at AS reservationExpiresAt,
         o.created_at AS createdAt, v.business_name AS businessName,
         (SELECT group_concat(oi.product_name || ' × ' || oi.quantity || ' [' || oi.batch_number || ']', ', ')
           FROM order_items oi WHERE oi.order_id = o.id) AS items
@@ -106,6 +110,7 @@ export async function POST(request: Request) {
     if ([...requestedByInventory.values()].some((quantity) => quantity > 100)) return Response.json({ error: "A medicine quantity cannot exceed 100 units" }, { status: 400 });
 
     const db = getD1();
+    await releaseExpiredReservations(db);
     const selected: Array<SelectedOffer & { requestedQuantity: number }> = [];
     for (const [inventoryId, requestedQuantity] of requestedByInventory) {
       const row = await db.prepare(`
@@ -220,35 +225,48 @@ export async function POST(request: Request) {
     }
 
     const number = orderNumber();
+    const reservationExpiry = paymentMethod === "online" ? reservationExpiresAt() : null;
     const statements = [
       db.prepare(`INSERT INTO orders (order_number, customer_profile_id, vendor_id, prescription_id, subtotal_paise, tax_paise,
         delivery_fee_paise, total_paise, payment_method, payment_status, delivery_method, order_status,
         delivery_status, prescription_status, place_of_supply_state_code, customer_name, customer_phone,
-        delivery_address, latitude, longitude)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        delivery_address, latitude, longitude, inventory_status, reservation_expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .bind(number, profile.id, vendorId, prescriptionId, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise,
           paymentMethod, paymentMethod === "cod" ? "cod_due" : "pending", deliveryMethod,
-          prescriptionStatus === "pending_review" ? "awaiting_prescription_review" : "placed",
+          prescriptionStatus === "pending_review" ? "awaiting_prescription_review" : paymentMethod === "online" ? "awaiting_payment" : "placed",
           prescriptionStatus === "pending_review" ? "pharmacist_review" : "awaiting_confirmation", prescriptionStatus,
-          placeOfSupplyStateCode, customerName, customerPhone, deliveryAddress, latitude, longitude),
-      ...allocatedLines.flatMap((line) => [
-        db.prepare(`INSERT INTO order_items (order_id, inventory_id, product_id, product_name,
+          placeOfSupplyStateCode, customerName, customerPhone, deliveryAddress, latitude, longitude,
+          paymentMethod === "online" ? "reserved" : "committed", reservationExpiry),
+      ...allocatedLines.flatMap((line) => {
+        const lineStatements = [db.prepare(`INSERT INTO order_items (order_id, inventory_id, product_id, product_name,
           batch_number, quantity, unit_price_paise, gst_percent, hsn_code, expiry_date, taxable_paise, cgst_paise,
           sgst_paise, igst_paise, discount_paise, line_total_paise)
           SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ? FROM orders WHERE order_number = ?`)
           .bind(line.inventoryId, line.productId, line.productName, line.batchNumber, line.allocatedQuantity,
             line.salePricePaise, line.gstPercent, line.hsnCode, line.expiryDate, line.taxablePaise,
-            line.cgstPaise, line.sgstPaise, line.igstPaise, line.lineTotalPaise, number),
-        db.prepare(`UPDATE pharmacy_inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP
+            line.cgstPaise, line.sgstPaise, line.igstPaise, line.lineTotalPaise, number)];
+        if (paymentMethod === "online") {
+          lineStatements.push(prepareOnlineOrderReservation(db, {
+            orderNumber: number,
+            inventoryId: line.inventoryId,
+            expiresAt: reservationExpiry!,
+          }));
+        } else {
+          lineStatements.push(
+            db.prepare(`UPDATE pharmacy_inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP
           WHERE id = ? AND active = 1 AND quarantine_status = 'available'
             AND expiry_date IS NOT NULL AND date(expiry_date) >= date('now')
             AND (quantity - reserved_quantity) >= ?`).bind(line.allocatedQuantity, line.inventoryId, line.allocatedQuantity),
-        db.prepare(`INSERT INTO stock_ledger (vendor_id, inventory_id, movement_type, quantity_delta, balance_after,
+            db.prepare(`INSERT INTO stock_ledger (vendor_id, inventory_id, movement_type, quantity_delta, balance_after,
           reference_type, reference_id, reason, actor_profile_id)
           SELECT i.vendor_id, i.id, 'online_sale', ?, i.quantity, 'order', o.id, 'Atomic FEFO allocation', o.customer_profile_id
           FROM pharmacy_inventory i JOIN orders o ON o.order_number = ? WHERE i.id = ?`)
-          .bind(-line.allocatedQuantity, number, line.inventoryId),
-      ]),
+              .bind(-line.allocatedQuantity, number, line.inventoryId),
+          );
+        }
+        return lineStatements;
+      }),
       db.prepare(`INSERT INTO delivery_events (order_id, status, actor_profile_id, note)
         SELECT id, ?, ?, ? FROM orders WHERE order_number = ?`)
         .bind(prescriptionStatus === "pending_review" ? "pharmacist_review" : "placed", profile.id,
@@ -264,7 +282,7 @@ export async function POST(request: Request) {
       await db.batch(statements);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      if (/stock_unavailable|fefo_violation|expired_stock|quarantined_stock/i.test(message)) {
+      if (/stock_unavailable|fefo_violation|expired_stock|quarantined_stock|reservation_stock_unavailable/i.test(message)) {
         return Response.json({ error: "Stock changed while the order was being placed. Refresh and try again." }, { status: 409 });
       }
       throw error;
@@ -272,9 +290,9 @@ export async function POST(request: Request) {
     const savedOrder = await db.prepare("SELECT id FROM orders WHERE order_number = ? LIMIT 1").bind(number).first<{ id: number }>();
     if (!savedOrder) throw new Error("Order transaction completed without an order record");
 
-    await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "order.placed", entityType: "order", entityId: savedOrder.id, after: { number, prescriptionId, prescriptionStatus, refillReminderId, subtotalPaise, taxPaise, totalPaise, placeOfSupplyStateCode, paymentMethod, deliveryMethod, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), latitude, longitude, allocations: allocatedLines.map(({ inventoryId, batchNumber, allocatedQuantity }) => ({ inventoryId, batchNumber, allocatedQuantity })) }, requestId: request.headers.get("cf-ray") ?? "" });
+    await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "order.placed", entityType: "order", entityId: savedOrder.id, after: { number, prescriptionId, prescriptionStatus, refillReminderId, subtotalPaise, taxPaise, totalPaise, placeOfSupplyStateCode, paymentMethod, deliveryMethod, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), latitude, longitude, reservationExpiresAt: reservationExpiry, allocations: allocatedLines.map(({ inventoryId, batchNumber, allocatedQuantity }) => ({ inventoryId, batchNumber, allocatedQuantity })) }, requestId: request.headers.get("cf-ray") ?? "" });
     await sendTransactionalEmail(profile.email, `URMED order ${number} received`, `<h2>Order ${number}</h2><p>Your order for ₹${(totalPaise / 100).toFixed(2)} including GST of ₹${(taxPaise / 100).toFixed(2)} has been received.</p>`);
-    return Response.json({ order: { id: savedOrder.id, orderNumber: number, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise, paymentMethod, prescriptionStatus, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), requiresPrescriptionReview: prescriptionStatus === "pending_review" } }, { status: 201 });
+    return Response.json({ order: { id: savedOrder.id, orderNumber: number, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise, paymentMethod, prescriptionStatus, reservationExpiresAt: reservationExpiry, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), requiresPrescriptionReview: prescriptionStatus === "pending_review" } }, { status: 201 });
   } catch (error) {
     return errorResponse(error);
   }

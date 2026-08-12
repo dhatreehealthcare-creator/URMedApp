@@ -1,4 +1,6 @@
-import { getD1, isAuthorizedOwner } from "../../../../db/d1";
+import { getD1 } from "../../../../db/d1";
+import { requireAdminProfile } from "../../../../lib/admin-access";
+import { errorResponse } from "../../../../lib/auth-server";
 
 const groups = [
   ["Identity & licensing", ["account_profiles", "vendors", "vendor_staff", "vendor_bank_accounts", "pharmacists", "vendor_licences"]],
@@ -15,8 +17,8 @@ const groups = [
 type ArchitectureObject = { name: string; type: "table" | "view" | "trigger" };
 
 export async function GET(request: Request) {
-  if (!isAuthorizedOwner(request)) return Response.json({ error: "Owner authentication required" }, { status: 401 });
   try {
+    await requireAdminProfile(request);
     const result = await getD1().prepare(`
       SELECT name, type FROM sqlite_master
       WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite_%'
@@ -44,6 +46,6 @@ export async function GET(request: Request) {
       phase: "Database architecture complete — workflow connection in progress",
     }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Database architecture status unavailable" }, { status: 500 });
+    return errorResponse(error);
   }
 }

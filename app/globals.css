@@ -78,7 +78,7 @@ a { color: inherit; text-decoration: none; }
 .location-control small { color: #7d8d8a; font-size: 10px; font-weight: 600; }
 .main-nav { margin-left: auto; display: flex; gap: 26px; font-size: 13px; font-weight: 700; color: #42514f; }
 .main-nav a:hover { color: var(--teal); }
-.main-nav button { margin: -8px 0; padding: 8px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--teal-dark); background: white; font: inherit; cursor: pointer; }
+.main-nav .workspace-link { margin: -8px 0; padding: 8px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--teal-dark); background: white; font: inherit; }
 .nav-actions { display: flex; align-items: center; gap: 9px; }
 .icon-button, .cart-button {
   height: 42px;
@@ -485,21 +485,29 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
   .live-toolbar button { width: 100%; }
 }
 
-/* Expanded vendor, customer and administration modules */
+/* Protected role routes and expanded workspaces */
+.protected-route { min-height: 100vh; background: #f4f7f6; }
+.protected-session { width: min(900px, calc(100% - 40px)); margin: 0 auto; padding: 34px 0; display: grid; gap: 18px; }
+.protected-session.authenticated { width: min(1180px, calc(100% - 40px)); padding: 18px 0; grid-template-columns: auto minmax(420px, 1fr); align-items: center; }
+.protected-session-heading > a { display: inline-flex; align-items: center; gap: 6px; color: var(--teal); font-size: 9px; font-weight: 850; }
+.protected-session-heading > div { margin-top: 25px; display: flex; align-items: center; gap: 13px; }
+.protected-session-heading > div > span { width: 48px; height: 48px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 14px; color: #fff; background: var(--teal); }
+.protected-session-heading small { color: var(--teal); font-size: 7px; font-weight: 900; letter-spacing: .13em; }
+.protected-session-heading h1 { margin: 4px 0 2px; font-family: var(--font-jakarta); font-size: 25px; letter-spacing: -.04em; }
+.protected-session-heading p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.protected-session > .auth-panel-live, .protected-session > .auth-live-card { width: 100%; max-width: none; }
+.delivery-route-main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 10px 0 60px; }
 .requirements-shell { min-height: 100vh; display: grid; grid-template-columns: 270px minmax(0, 1fr); color: var(--ink); background: #f4f7f6; }
 .requirements-sidebar { min-height: 100vh; padding: 24px 18px 20px; position: sticky; top: 0; align-self: start; display: flex; flex-direction: column; border-right: 1px solid #dce6e3; background: #fff; }
 .portal-role-card { margin: 28px 0 18px; padding: 13px; display: flex; align-items: center; gap: 10px; border: 1px solid #dbe7e3; border-radius: 14px; background: #fbfdfc; }
 .portal-role-card > span { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px; color: #fff; background: var(--teal); }
 .portal-role-card div { min-width: 0; display: grid; }
-.portal-role-card small, .role-switch > small { color: #87958f; font-size: 8px; text-transform: uppercase; letter-spacing: .08em; }
+.portal-role-card small { color: #87958f; font-size: 8px; text-transform: uppercase; letter-spacing: .08em; }
 .portal-role-card strong { margin-top: 3px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .requirements-nav { display: grid; gap: 4px; }
 .requirements-nav button { width: 100%; min-height: 42px; padding: 0 12px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 11px; color: #657570; background: transparent; font-size: 10px; font-weight: 750; text-align: left; cursor: pointer; transition: .18s ease; }
 .requirements-nav button:hover, .requirements-nav button.active { color: var(--teal-dark); background: var(--mint); }
-.role-switch { margin-top: auto; padding-top: 22px; }
-.role-switch > div { margin-top: 8px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; border-radius: 10px; background: #edf3f1; }
-.role-switch button { padding: 7px 3px; border: 0; border-radius: 7px; color: #71807b; background: transparent; font-size: 7px; font-weight: 850; text-transform: uppercase; cursor: pointer; }
-.role-switch button.active { color: var(--teal-dark); background: #fff; box-shadow: 0 2px 8px rgba(17,67,59,.1); }
+.requirements-sidebar .back-marketplace { margin-top: auto; }
 .requirements-sidebar .back-marketplace { width: 100%; }
 .requirements-sidebar .back-marketplace svg { transform: none; }
 .requirements-main { min-width: 0; padding: 30px 34px 60px; }
@@ -732,6 +740,29 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
 .compliance-forms { align-items: start; }
 .phone-verify-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .phone-verify-row input { max-width: 150px; border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; font: inherit; }
+.registration-wizard { overflow: visible; }
+.registration-steps { padding: 18px 21px 4px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.registration-steps button { min-width: 0; padding: 11px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 8px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: #f8faf9; text-align: left; cursor: pointer; }
+.registration-steps button:disabled { cursor: default; }
+.registration-steps button > span { width: 31px; height: 31px; grid-row: 1 / 3; display: grid; place-items: center; border-radius: 9px; color: #73837f; background: #e9efed; }
+.registration-steps button small { font-size: 7px; }
+.registration-steps button strong { overflow: hidden; color: var(--ink); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.registration-steps button.active { border-color: #80bcad; background: #eff9f6; box-shadow: 0 0 0 2px rgba(8,124,108,.07); }
+.registration-steps button.active > span, .registration-steps button.done > span { color: #fff; background: var(--teal); }
+.registration-review { padding: 0 21px 20px; display: grid; gap: 10px; }
+.registration-review > article { padding: 13px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px; border: 1px solid var(--line); border-radius: 12px; background: #fbfdfc; }
+.registration-review > article > svg { color: var(--teal); }
+.registration-review small, .registration-review strong { display: block; }
+.registration-review small { color: var(--muted); font-size: 8px; }
+.registration-review strong { margin-top: 3px; font-size: 10px; }
+.registration-review p { margin: 5px 0 0; color: var(--muted); font-size: 8px; line-height: 1.55; overflow-wrap: anywhere; }
+.registration-review article button { padding: 5px 8px; border: 0; color: var(--teal); background: transparent; font: inherit; font-size: 8px; font-weight: 800; cursor: pointer; }
+.registration-review .portal-note { margin: 0; }
+.registration-actions { padding: 0 21px 21px; display: grid; grid-template-columns: auto 1fr auto; gap: 10px; }
+.registration-complete { padding: 28px; display: flex; align-items: flex-start; gap: 17px; background: linear-gradient(125deg, #effbf6, #fff); }
+.registration-complete > svg { color: var(--teal); flex: 0 0 auto; }
+.registration-complete h2 { margin: 6px 0; }
+.registration-complete p { max-width: 650px; margin: 0 0 12px; color: var(--muted); line-height: 1.6; }
 .empty-review { display: grid; justify-items: center; gap: 7px; padding: 36px 20px; color: var(--muted); text-align: center; }
 .empty-review svg { color: var(--green); }
 .empty-review strong { color: var(--ink); }
@@ -741,7 +772,8 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
 .review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .review-heading strong, .review-heading small { display: block; }
 .review-heading small { color: var(--muted); margin-top: 4px; }
-.compliance-review-list a { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 12px; font-weight: 750; text-decoration: none; }
+.compliance-document-link { width: fit-content; display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: var(--green); background: transparent; font-size: 12px; font-weight: 750; cursor: pointer; }
+.compliance-document-link:disabled { opacity: .55; cursor: wait; }
 .compliance-review-list textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 9px; padding: 9px; font: inherit; }
 .review-actions { display: flex; gap: 8px; }
 .review-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 8px 11px; border: 0; border-radius: 8px; color: white; background: var(--green); font-weight: 750; cursor: pointer; }
@@ -901,6 +933,8 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
 }
 
 @media (max-width: 640px) {
+  .protected-session, .protected-session.authenticated, .delivery-route-main { width: min(100% - 28px, 1180px); }
+  .protected-session.authenticated { grid-template-columns: 1fr; }
   .nav-wrap, .hero-content, .content-section, .footer-inner { width: min(100% - 28px, 1180px); }
   .nav-wrap { min-height: 66px; gap: 10px; }
   .brand { font-size: 21px; }
@@ -958,7 +992,7 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
   .requirements-shell { grid-template-columns: 1fr; }
   .requirements-sidebar { min-height: auto; padding: 12px 14px; position: static; z-index: 4; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 9px 12px; overflow: hidden; }
   .requirements-sidebar .sidebar-brand { grid-column: 1; }
-  .portal-role-card, .role-switch, .requirements-sidebar .back-marketplace { display: none; }
+  .portal-role-card, .requirements-sidebar .back-marketplace { display: none; }
   .requirements-nav { grid-column: 1 / -1; display: flex; overflow-x: auto; padding-bottom: 2px; }
   .requirements-nav button { width: auto; flex: 0 0 auto; min-height: 37px; padding: 0 10px; white-space: nowrap; }
   .requirements-main { padding: 22px 14px 42px; }
@@ -997,6 +1031,7 @@ td > small { margin-top: 4px; color: var(--muted); font-size: 7px; }
 
 @media (max-width: 760px) {
   .setup-progress, .vendor-setup-gate { align-items: flex-start; flex-direction: column; }
+  .registration-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .setup-statuses { justify-content: flex-start; }
   .product-search-results { grid-template-columns: 1fr; }
 }

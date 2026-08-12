@@ -3,6 +3,7 @@ import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse } from "../../../lib/auth-server";
 import { asPositiveInteger, rupeesToPaise } from "../../../lib/money";
 import { isStrictIsoDate } from "../../../lib/date-controls";
+import { releaseExpiredReservations } from "../../../lib/inventory-reservations";
 import { requireVendorPermission } from "../../../lib/vendor-access";
 
 type InventoryRow = {
@@ -36,6 +37,7 @@ export async function GET(request: Request) {
     const mine = url.searchParams.get("scope") === "mine";
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const db = getD1();
+    await releaseExpiredReservations(db);
     let where = `i.active = 1 AND i.quarantine_status = 'available' AND i.expiry_date IS NOT NULL
       AND i.cold_chain_status IN ('not_applicable','within_range') AND p.active = 1
       AND v.approval_status = 'approved' AND v.compliance_status = 'verified' AND v.suspended_at IS NULL

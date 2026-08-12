@@ -2,7 +2,8 @@ import { getD1 } from "../../../../db/d1";
 import { appendAuditEvent } from "../../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../../lib/auth-server";
 import { requireVendorPermission } from "../../../../lib/vendor-access";
-import { validateSupplierReturn } from "../../../../lib/operations-controls";
+import { releaseExpiredReservations } from "../../../../lib/inventory-reservations";
+import { completeSupplierReturn, listReturnablePurchases, PurchaseLifecycleError } from "../../../../lib/supplier-returns";
 
 export async function GET(request: Request) {
   try {
@@ -38,18 +39,7 @@ export async function GET(request: Request) {
         r.total_paise AS totalPaise,r.status,r.created_at AS createdAt,s.business_name AS supplierName,
         po.purchase_number AS purchaseNumber FROM supplier_returns r JOIN suppliers s ON s.id=r.supplier_id
         JOIN purchase_orders po ON po.id=r.purchase_order_id WHERE r.vendor_id=? ORDER BY r.id DESC LIMIT 50`).bind(vendorId).all(),
-      db.prepare(`SELECT item.id AS purchaseOrderItemId,item.purchase_order_id AS purchaseOrderId,
-        item.inventory_id AS inventoryId,item.product_id AS productId,p.name AS productName,
-        item.batch_number AS batchNumber,item.quantity + item.free_quantity AS purchasedQuantity,
-        item.purchase_price_paise AS purchasePricePaise,po.purchase_number AS purchaseNumber,
-        po.supplier_id AS supplierId,s.business_name AS supplierName,i.quantity AS currentQuantity,
-        COALESCE((SELECT SUM(ri.quantity) FROM supplier_return_items ri JOIN supplier_returns r ON r.id=ri.supplier_return_id
-          WHERE ri.purchase_order_item_id=item.id AND r.status<>'cancelled'),0) AS returnedQuantity
-        FROM purchase_order_items item JOIN purchase_orders po ON po.id=item.purchase_order_id
-        JOIN suppliers s ON s.id=po.supplier_id JOIN products p ON p.id=item.product_id
-        JOIN pharmacy_inventory i ON i.id=item.inventory_id
-        WHERE po.vendor_id=? AND po.status='posted' AND i.quantity>0
-        ORDER BY po.invoice_date DESC,item.id DESC LIMIT 250`).bind(vendorId).all(),
+      listReturnablePurchases(db, vendorId),
       db.prepare(`SELECT t.id, t.storage_location AS storageLocation, t.temperature_celsius_x10 AS temperatureCelsiusX10,
         t.within_range AS withinRange, t.excursion_action AS excursionAction, t.recorded_at AS recordedAt,
         p.name AS productName, i.batch_number AS batchNumber FROM temperature_logs t
@@ -61,7 +51,7 @@ export async function GET(request: Request) {
         WHERE vendor_id=? ORDER BY transaction_date DESC, id DESC LIMIT 100`).bind(vendorId).all(),
     ]);
     return Response.json({ summary, alerts: alerts.results, sales: sales.results, inventory: inventory.results,
-      returns: returns.results, supplierReturns: supplierReturns.results, returnablePurchases: returnablePurchases.results,
+      returns: returns.results, supplierReturns: supplierReturns.results, returnablePurchases,
       temperatures: temperatures.results, registers: registers.results });
   } catch (error) { return errorResponse(error); }
 }
@@ -70,6 +60,7 @@ export async function POST(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["vendor"]); const vendorId = profile.vendorId!;
     const body = await request.json() as Record<string, unknown>; const action = String(body.action ?? ""); const db = getD1();
+    await releaseExpiredReservations(db);
     await requireVendorPermission(request, action === "supplier_return" ? "purchase.write" : ["offline_sale","return"].includes(action) ? "sale.write" : "inventory.write");
     if (action === "temperature") {
       const inventoryId = Number(body.inventoryId); const temperature = Number(body.temperatureCelsius);
@@ -155,43 +146,21 @@ export async function POST(request: Request) {
       return Response.json({created:true,saleNumber,totalPaise:total},{status:201});
     }
     if (action === "supplier_return") {
-      const purchaseOrderItemId=Number(body.purchaseOrderItemId), quantity=Number(body.quantity);
-      const reason=String(body.reason??"").trim().slice(0,300);
-      if(!Number.isInteger(purchaseOrderItemId)||!Number.isInteger(quantity)||quantity<1||reason.length<5) return Response.json({error:"Purchase item, quantity and a clear return reason are required"},{status:400});
-      const item=await db.prepare(`SELECT item.id,item.purchase_order_id AS purchaseOrderId,item.inventory_id AS inventoryId,
-        item.purchase_price_paise AS purchasePricePaise,item.quantity+item.free_quantity AS purchasedQuantity,
-        po.supplier_id AS supplierId,i.quantity AS currentQuantity,
-        COALESCE((SELECT SUM(ri.quantity) FROM supplier_return_items ri JOIN supplier_returns r ON r.id=ri.supplier_return_id
-          WHERE ri.purchase_order_item_id=item.id AND r.status<>'cancelled'),0) AS returnedQuantity
-        FROM purchase_order_items item JOIN purchase_orders po ON po.id=item.purchase_order_id
-        JOIN pharmacy_inventory i ON i.id=item.inventory_id
-        WHERE item.id=? AND po.vendor_id=? AND po.status='posted'`).bind(purchaseOrderItemId,vendorId)
-        .first<{id:number;purchaseOrderId:number;inventoryId:number;purchasePricePaise:number;purchasedQuantity:number;supplierId:number;currentQuantity:number;returnedQuantity:number}>();
-      if(!item)return Response.json({error:"Posted purchase item not found"},{status:404});
-      try{validateSupplierReturn({quantity,currentQuantity:item.currentQuantity,purchasedQuantity:item.purchasedQuantity,returnedQuantity:item.returnedQuantity});}
-      catch(error){return Response.json({error:error instanceof Error?error.message:"Return quantity is invalid"},{status:409});}
-      const nonce=`${Date.now()}-${crypto.randomUUID().slice(0,8)}`,returnNumber=`SRET-${nonce}`,debitNoteNumber=`DN-${nonce}`,totalPaise=quantity*item.purchasePricePaise;
       try {
-        const results=await db.batch([
-          db.prepare(`INSERT INTO supplier_returns (return_number,vendor_id,supplier_id,purchase_order_id,debit_note_number,reason,total_paise,status,created_by_profile_id) VALUES (?,?,?,?,?,?,?,'completed',?)`).bind(returnNumber,vendorId,item.supplierId,item.purchaseOrderId,debitNoteNumber,reason,totalPaise,profile.id),
-          db.prepare(`INSERT INTO supplier_return_items (supplier_return_id,purchase_order_item_id,inventory_id,quantity,amount_paise,disposition)
-            SELECT id,?,?,?,?,'returned_to_supplier' FROM supplier_returns WHERE return_number=?`).bind(purchaseOrderItemId,item.inventoryId,quantity,totalPaise,returnNumber),
-          db.prepare(`UPDATE pharmacy_inventory SET quantity=quantity-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=? AND quantity>=?`).bind(quantity,item.inventoryId,vendorId,quantity),
-          db.prepare(`INSERT INTO stock_ledger (vendor_id,inventory_id,movement_type,quantity_delta,balance_after,reference_type,reference_id,reason,actor_profile_id)
-            SELECT ?,?,'supplier_return',-?,i.quantity,'supplier_return',r.id,?,? FROM pharmacy_inventory i JOIN supplier_returns r ON r.return_number=? WHERE i.id=?`).bind(vendorId,item.inventoryId,quantity,reason,profile.id,returnNumber,item.inventoryId),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
-            SELECT vendor_id,'SUPPLIER_PAYABLE',date('now'),'Debit note '||debit_note_number,total_paise,0,'supplier_return',id,? FROM supplier_returns WHERE return_number=?`).bind(profile.id,returnNumber),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
-            SELECT vendor_id,'PURCHASE_RETURNS',date('now'),'Purchase return '||return_number,0,total_paise,'supplier_return',id,? FROM supplier_returns WHERE return_number=?`).bind(profile.id,returnNumber),
-        ]);
-        if(!results[2]?.meta.changes)return Response.json({error:"Stock changed during return processing. Refresh and retry"},{status:409});
+        const result = await completeSupplierReturn({
+          db,
+          vendorId,
+          actorProfileId: profile.id,
+          purchaseOrderItemId: Number(body.purchaseOrderItemId),
+          quantity: Number(body.quantity),
+          reason: String(body.reason ?? ""),
+          requestId: request.headers.get("cf-ray") ?? "",
+        });
+        return Response.json(result, { status: 201 });
       } catch (error) {
-        if (/supplier_return_quantity_invalid/i.test(error instanceof Error ? error.message : "")) return Response.json({error:"Stock or returnable quantity changed. Refresh and retry"},{status:409});
+        if (error instanceof PurchaseLifecycleError) return Response.json({ error: error.message }, { status: error.status });
         throw error;
       }
-      const saved=await db.prepare(`SELECT id FROM supplier_returns WHERE return_number=?`).bind(returnNumber).first<{id:number}>();
-      await appendAuditEvent({vendorId,actorProfileId:profile.id,action:"supplier_return.completed",entityType:"supplier_return",entityId:saved!.id,after:{returnNumber,debitNoteNumber,purchaseOrderItemId,quantity,totalPaise,reason},requestId:request.headers.get("cf-ray")??""});
-      return Response.json({created:true,returnNumber,debitNoteNumber,totalPaise},{status:201});
     }
     return Response.json({ error: "Vendor operation is invalid" }, { status: 400 });
   } catch (error) { return errorResponse(error); }

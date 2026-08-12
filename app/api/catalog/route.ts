@@ -1,4 +1,5 @@
 import { getD1 } from "../../../db/d1";
+import { releaseExpiredReservations } from "../../../lib/inventory-reservations";
 
 type CatalogRow = {
   legacyId: number;
@@ -23,6 +24,7 @@ export async function GET(request: Request) {
     const requestedLimit = Number(url.searchParams.get("limit") ?? 20);
     const limit = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 20, 1), 50);
     const db = getD1();
+    await releaseExpiredReservations(db);
     let result;
     if (query) {
       result = await db.prepare(`

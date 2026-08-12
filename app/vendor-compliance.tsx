@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { authenticatedFetch } from "./marketplace-client";
 
 type Application = { vendorId: number; businessName: string; ownerName: string; phone: string; email: string; address: string; approvalStatus: string; complianceStatus: string; registeredAt: string; licenceCount: number; validLicenceCount: number; pharmacistCount: number; validPharmacistCount: number };
 type Licence = { id: number; vendorId: number; licenceNumber: string; formType: string; issuingAuthority: string; validFrom: string; validUntil: string; verificationStatus: string; documentId: number; documentName: string };
@@ -23,7 +24,7 @@ export function VendorCompliance() {
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const response = await fetch("/api/admin/vendor-compliance", { cache: "no-store" });
+      const response = await authenticatedFetch("/api/admin/vendor-compliance", { cache: "no-store" });
       const payload = await response.json() as Payload;
       if (!response.ok) throw new Error(payload.error || "Vendor applications are unavailable");
       setData(payload);
@@ -39,11 +40,23 @@ export function VendorCompliance() {
   const decide = async (entity: "licence" | "pharmacist", id: number, decision: "verified" | "rejected") => {
     const key = `${entity}-${id}`; setBusy(key); setError("");
     try {
-      const response = await fetch("/api/admin/vendor-compliance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entity, id, decision, reason: reasons[key] || "" }) });
+      const response = await authenticatedFetch("/api/admin/vendor-compliance", { method: "POST", body: JSON.stringify({ entity, id, decision, reason: reasons[key] || "" }) });
       const payload = await response.json() as Payload;
       if (!response.ok) throw new Error(payload.error || "The decision could not be saved");
       setData(payload);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "The decision could not be saved"); }
+    finally { setBusy(""); }
+  };
+
+  const openDocument = async (documentId: number) => {
+    const key = `document-${documentId}`; setBusy(key); setError("");
+    try {
+      const response = await authenticatedFetch(`/api/documents/${documentId}`, { cache: "no-store" });
+      if (!response.ok) throw new Error((await response.text()) || "Document could not be opened");
+      const objectUrl = URL.createObjectURL(await response.blob());
+      window.open(objectUrl, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Document could not be opened"); }
     finally { setBusy(""); }
   };
 
@@ -56,8 +69,8 @@ export function VendorCompliance() {
     </section>
 
     {data && <div className="portal-split compliance-review-columns">
-      <section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Drug licences</h2><p>Open the source document and verify dates and authority.</p></div></div><div className="compliance-review-list">{data.licences.map((item) => <article key={item.id}><div className="review-heading"><div><strong>{item.licenceNumber} · Form {item.formType}</strong><small>{item.issuingAuthority} · {item.validFrom} to {item.validUntil}</small></div><ReviewStatus value={item.verificationStatus} /></div><a href={`/api/documents/${item.documentId}`} rel="noreferrer" target="_blank"><ExternalLink size={14} /> {item.documentName || "Open licence document"}</a><textarea onChange={(event) => setReasons((current) => ({ ...current, [`licence-${item.id}`]: event.target.value }))} placeholder="Reason required only when rejecting" rows={2} value={reasons[`licence-${item.id}`] || ""} /><div className="review-actions"><button disabled={busy === `licence-${item.id}`} onClick={() => void decide("licence", item.id, "verified")} type="button"><CheckCircle2 size={15} /> Verify</button><button className="reject" disabled={busy === `licence-${item.id}`} onClick={() => void decide("licence", item.id, "rejected")} type="button"><XCircle size={15} /> Reject</button></div></article>)}</div></section>
-      <section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Pharmacists</h2><p>Verify the State Pharmacy Council registration.</p></div></div><div className="compliance-review-list">{data.pharmacists.map((item) => <article key={item.id}><div className="review-heading"><div><strong>{item.fullName}</strong><small>{item.registrationNumber} · {item.councilName}</small></div><ReviewStatus value={item.verificationStatus} /></div><a href={`/api/documents/${item.documentId}`} rel="noreferrer" target="_blank"><ExternalLink size={14} /> {item.documentName || "Open registration document"}</a><textarea onChange={(event) => setReasons((current) => ({ ...current, [`pharmacist-${item.id}`]: event.target.value }))} placeholder="Reason required only when rejecting" rows={2} value={reasons[`pharmacist-${item.id}`] || ""} /><div className="review-actions"><button disabled={busy === `pharmacist-${item.id}`} onClick={() => void decide("pharmacist", item.id, "verified")} type="button"><CheckCircle2 size={15} /> Verify</button><button className="reject" disabled={busy === `pharmacist-${item.id}`} onClick={() => void decide("pharmacist", item.id, "rejected")} type="button"><XCircle size={15} /> Reject</button></div></article>)}</div></section>
+      <section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Drug licences</h2><p>Open the source document and verify dates and authority.</p></div></div><div className="compliance-review-list">{data.licences.map((item) => <article key={item.id}><div className="review-heading"><div><strong>{item.licenceNumber} · Form {item.formType}</strong><small>{item.issuingAuthority} · {item.validFrom} to {item.validUntil}</small></div><ReviewStatus value={item.verificationStatus} /></div><button className="compliance-document-link" disabled={busy === `document-${item.documentId}`} onClick={() => void openDocument(item.documentId)} type="button"><ExternalLink size={14} /> {item.documentName || "Open licence document"}</button><textarea onChange={(event) => setReasons((current) => ({ ...current, [`licence-${item.id}`]: event.target.value }))} placeholder="Reason required only when rejecting" rows={2} value={reasons[`licence-${item.id}`] || ""} /><div className="review-actions"><button disabled={busy === `licence-${item.id}`} onClick={() => void decide("licence", item.id, "verified")} type="button"><CheckCircle2 size={15} /> Verify</button><button className="reject" disabled={busy === `licence-${item.id}`} onClick={() => void decide("licence", item.id, "rejected")} type="button"><XCircle size={15} /> Reject</button></div></article>)}</div></section>
+      <section className="portal-panel"><div className="portal-panel-heading compact"><div><h2>Pharmacists</h2><p>Verify the State Pharmacy Council registration.</p></div></div><div className="compliance-review-list">{data.pharmacists.map((item) => <article key={item.id}><div className="review-heading"><div><strong>{item.fullName}</strong><small>{item.registrationNumber} · {item.councilName}</small></div><ReviewStatus value={item.verificationStatus} /></div><button className="compliance-document-link" disabled={busy === `document-${item.documentId}`} onClick={() => void openDocument(item.documentId)} type="button"><ExternalLink size={14} /> {item.documentName || "Open registration document"}</button><textarea onChange={(event) => setReasons((current) => ({ ...current, [`pharmacist-${item.id}`]: event.target.value }))} placeholder="Reason required only when rejecting" rows={2} value={reasons[`pharmacist-${item.id}`] || ""} /><div className="review-actions"><button disabled={busy === `pharmacist-${item.id}`} onClick={() => void decide("pharmacist", item.id, "verified")} type="button"><CheckCircle2 size={15} /> Verify</button><button className="reject" disabled={busy === `pharmacist-${item.id}`} onClick={() => void decide("pharmacist", item.id, "rejected")} type="button"><XCircle size={15} /> Reject</button></div></article>)}</div></section>
     </div>}
   </div>;
 }

@@ -1,5 +1,6 @@
 import { getD1 } from "../../../../../db/d1";
 import { errorResponse, requireLocalProfile } from "../../../../../lib/auth-server";
+import { captureOnlineOrderPayment, InventoryReservationError } from "../../../../../lib/inventory-reservations";
 import { getRequiredRuntimeValue } from "../../../../../lib/runtime-env";
 import { constantTimeEqual, hmacHex } from "../../../../../lib/signatures";
 
@@ -20,20 +21,19 @@ export async function POST(request: Request) {
     if (order.orderStatus === "cancelled" || !["not_required", "approved"].includes(order.prescriptionStatus)) return Response.json({ error: "This order is not eligible for payment" }, { status: 409 });
     const expected = await hmacHex(getRequiredRuntimeValue("RAZORPAY_KEY_SECRET"), `${razorpayOrderId}|${razorpayPaymentId}`);
     if (!constantTimeEqual(expected, receivedSignature)) return Response.json({ error: "Payment signature verification failed" }, { status: 400 });
-    if (order.paymentStatus === "paid") {
-      if (order.paymentId && order.paymentId !== razorpayPaymentId) return Response.json({error:"A different payment is already recorded for this order"},{status:409});
-      return Response.json({ verified: true, duplicate: true, orderId: order.id });
+    try {
+      const result = await captureOnlineOrderPayment({
+        db,
+        orderId: order.id,
+        paymentId: razorpayPaymentId,
+        actorProfileId: profile.id,
+        note: "Online payment verified",
+      });
+      return Response.json({ verified: true, duplicate: result.duplicate, orderId: order.id });
+    } catch (error) {
+      if (error instanceof InventoryReservationError) return Response.json({ error: error.message }, { status: error.status });
+      throw error;
     }
-    await db.batch([
-      db.prepare(`UPDATE orders SET payment_status = 'paid',
-        order_status = CASE WHEN order_status = 'awaiting_payment' THEN 'placed' ELSE order_status END,
-        delivery_status = CASE WHEN order_status = 'awaiting_payment' THEN 'awaiting_confirmation' ELSE delivery_status END,
-        razorpay_payment_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND payment_status <> 'paid'`).bind(razorpayPaymentId, order.id),
-      db.prepare(`INSERT INTO delivery_events (order_id,status,actor_profile_id,note)
-        SELECT ?,'payment_confirmed',?,'Online payment verified' WHERE NOT EXISTS
-          (SELECT 1 FROM delivery_events WHERE order_id=? AND status='payment_confirmed')`).bind(order.id,profile.id,order.id),
-    ]);
-    return Response.json({ verified: true, orderId: order.id });
   } catch (error) {
     return errorResponse(error);
   }

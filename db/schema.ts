@@ -45,6 +45,8 @@ export const products = sqliteTable("products", {
   index("products_manufacturer_idx").on(table.manufacturer),
 ]);
 
+// Immutable legacy-import archive. This table is not an authentication or live
+// ownership source; operational customer records reference accountProfiles.
 export const customers = sqliteTable("customers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   legacyId: integer("legacy_id").notNull(),
@@ -214,6 +216,8 @@ export const orders = sqliteTable("orders", {
   longitude: text("longitude").notNull().default(""),
   razorpayOrderId: text("razorpay_order_id").notNull().default(""),
   razorpayPaymentId: text("razorpay_payment_id").notNull().default(""),
+  inventoryStatus: text("inventory_status", { enum: ["reserved", "committed", "released"] }).notNull().default("committed"),
+  reservationExpiresAt: text("reservation_expires_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
@@ -242,6 +246,49 @@ export const orderItems = sqliteTable("order_items", {
   discountPaise: integer("discount_paise").notNull().default(0),
   lineTotalPaise: integer("line_total_paise").notNull(),
 });
+
+export const inventoryReservations = sqliteTable("inventory_reservations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orderId: integer("order_id").notNull().references(() => orders.id),
+  orderItemId: integer("order_item_id").notNull().references(() => orderItems.id),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  inventoryId: integer("inventory_id").notNull().references(() => pharmacyInventory.id),
+  quantity: integer("quantity").notNull(),
+  status: text("status", { enum: ["active", "committed", "released", "expired"] }).notNull().default("active"),
+  expiresAt: text("expires_at").notNull(),
+  committedAt: text("committed_at"),
+  committedByProfileId: integer("committed_by_profile_id").references(() => accountProfiles.id),
+  releasedAt: text("released_at"),
+  statusReason: text("status_reason").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("inventory_reservations_order_item_uidx").on(table.orderItemId),
+  index("inventory_reservations_order_status_idx").on(table.orderId, table.status),
+  index("inventory_reservations_active_expiry_idx").on(table.status, table.expiresAt),
+  index("inventory_reservations_inventory_status_idx").on(table.inventoryId, table.status),
+]);
+
+export const inventoryReservationRecoveryRuns = sqliteTable("inventory_reservation_recovery_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runKey: text("run_key").notNull(),
+  triggerSource: text("trigger_source", { enum: ["scheduled", "manual"] }).notNull().default("scheduled"),
+  scheduledAt: text("scheduled_at").notNull(),
+  status: text("status", { enum: ["running", "completed", "failed"] }).notNull().default("running"),
+  attempts: integer("attempts").notNull().default(1),
+  batchSize: integer("batch_size").notNull(),
+  maxBatches: integer("max_batches").notNull(),
+  batchesProcessed: integer("batches_processed").notNull().default(0),
+  ordersReleased: integer("orders_released").notNull().default(0),
+  reservationsReleased: integer("reservations_released").notNull().default(0),
+  remainingExpiredOrders: integer("remaining_expired_orders").notNull().default(0),
+  startedAt: text("started_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  completedAt: text("completed_at"),
+  errorMessage: text("error_message").notNull().default(""),
+}, (table) => [
+  uniqueIndex("inventory_reservation_recovery_runs_key_uidx").on(table.runKey),
+  index("inventory_reservation_recovery_runs_started_idx").on(table.startedAt, table.status),
+]);
 
 export const deliveryEvents = sqliteTable("delivery_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -395,7 +442,7 @@ export const purchaseOrders = sqliteTable("purchase_orders", {
   taxPaise: integer("tax_paise").notNull().default(0),
   totalPaise: integer("total_paise").notNull().default(0),
   paymentStatus: text("payment_status").notNull().default("unpaid"),
-  status: text("status").notNull().default("draft"),
+  status: text("status", { enum: ["draft", "posting", "received"] }).notNull().default("draft"),
   createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   postedAt: text("posted_at"),

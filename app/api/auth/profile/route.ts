@@ -32,6 +32,10 @@ export async function POST(request: Request) {
     const phone = rawPhone.length > 10 ? rawPhone.slice(-10) : rawPhone;
     if (role === "vendor" && !/^\d{10}$/.test(phone)) return Response.json({ error: "Vendor phone must contain exactly 10 digits" }, { status: 400 });
     const db = getD1();
+    if (email) {
+      const duplicateEmail = await db.prepare("SELECT id FROM account_profiles WHERE lower(email) = ? AND auth_user_id <> ? LIMIT 1").bind(email, user.id).first();
+      if (duplicateEmail) return Response.json({ error: "This email address is already registered" }, { status: 409 });
+    }
     if (phone) {
       const duplicate = await db.prepare("SELECT id FROM account_profiles WHERE phone = ? AND auth_user_id <> ? LIMIT 1").bind(phone, user.id).first();
       if (duplicate) return Response.json({ error: "This phone number is already registered" }, { status: 409 });
@@ -47,15 +51,9 @@ export async function POST(request: Request) {
     const profile = await getLocalProfile(user.id);
     if (profile?.role === "vendor" && !profile.vendorId) {
       await db.prepare(`
-        INSERT INTO vendors (profile_id, business_name, owner_name, phone, email, gst_number, licence_number,
-          address, latitude, longitude, home_delivery, approval_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'testing')
-      `).bind(
-        profile.id, businessName, name, phone, email,
-        String(body.gstNumber ?? "").trim().slice(0, 20), String(body.licenceNumber ?? "").trim().slice(0, 80),
-        String(body.address ?? "").trim().slice(0, 500), String(body.latitude ?? "").trim().slice(0, 40),
-        String(body.longitude ?? "").trim().slice(0, 40), body.homeDelivery ? 1 : 0,
-      ).run();
+        INSERT INTO vendors (profile_id, business_name, owner_name, phone, email, approval_status, compliance_status)
+        VALUES (?, ?, ?, ?, ?, 'draft', 'pending')
+      `).bind(profile.id, businessName, name, phone, email).run();
     }
     return Response.json({ profile: await getLocalProfile(user.id) });
   } catch (error) {
