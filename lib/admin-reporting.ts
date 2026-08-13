@@ -80,8 +80,44 @@ export function reportCsv(headers: string[], rows: unknown[][]) {
 
 export function wantsCsv(url: URL) {
   const format = url.searchParams.get("format");
-  if (format && format !== "csv") throw new AdminReportError("Report format must be csv");
+  if (format && !["csv", "xlsx", "pdf"].includes(format)) throw new AdminReportError("Report format is invalid");
   return format === "csv";
+}
+
+export function reportFormat(url: URL): "json" | "csv" | "xlsx" | "pdf" {
+  const format = url.searchParams.get("format") ?? "json";
+  if (!["json", "csv", "xlsx", "pdf"].includes(format)) throw new AdminReportError("Report format is invalid");
+  return format as "json" | "csv" | "xlsx" | "pdf";
+}
+
+function xml(value: unknown) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;"); }
+
+async function xlsxBytes(headers: string[], rows: unknown[][]) {
+  const { zipSync, strToU8 } = await import("fflate");
+  const values = [headers, ...rows];
+  const cells = values.map((row, rowIndex) => `<row r="${rowIndex + 1}">${row.map((value, colIndex) => { const ref = `${String.fromCharCode(65 + colIndex)}${rowIndex + 1}`; return typeof value === "number" ? `<c r="${ref}"><v>${value}</v></c>` : `<c r="${ref}" t="inlineStr"><is><t>${xml(value)}</t></is></c>`; }).join("")}</row>`).join("");
+  const files = {
+    "[Content_Types].xml": strToU8(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`),
+    "_rels/.rels": strToU8(`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`),
+    "xl/workbook.xml": strToU8(`<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Report" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+    "xl/_rels/workbook.xml.rels": strToU8(`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`),
+    "xl/worksheets/sheet1.xml": strToU8(`<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${cells}</sheetData></worksheet>`),
+  };
+  return zipSync(files, { level: 6 });
+}
+
+async function pdfBytes(title: string, headers: string[], rows: unknown[][]) {
+  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+  const document = await PDFDocument.create(); let page = document.addPage([595, 842]); const font = await document.embedFont(StandardFonts.Helvetica); let y = 800;
+  const draw = (value: string, size = 8) => { if (y < 45) { page = document.addPage([595, 842]); y = 800; } page.drawText(value.slice(0, 120), { x: 36, y, size, font, color: rgb(0.08, 0.16, 0.15) }); y -= size + 7; };
+  draw(title, 15); draw(headers.join(" | "), 8); for (const row of rows) draw(row.map((value) => String(value ?? "")).join(" | ")); return document.save();
+}
+
+export async function reportExportResponse(filename: string, title: string, headers: string[], rows: unknown[][], format: "csv" | "xlsx" | "pdf") {
+  const common = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
+  if (format === "csv") return csvResponse(filename.replace(/\.[^.]+$/, ".csv"), headers, rows);
+  if (format === "xlsx") return new Response(await xlsxBytes(headers, rows) as unknown as BodyInit, { headers: { ...common, "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Content-Disposition": `attachment; filename="${filename.replace(/\.[^.]+$/, ".xlsx")}"` } });
+  return new Response(await pdfBytes(title, headers, rows) as unknown as BodyInit, { headers: { ...common, "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="${filename.replace(/\.[^.]+$/, ".pdf")}"` } });
 }
 
 export function csvResponse(filename: string, headers: string[], rows: unknown[][]) {

@@ -1258,6 +1258,15 @@ export async function runPhase0IntegrationSuite() {
     assert.ok(Array.isArray(admin.payload.accounts));
     assert.equal(typeof admin.payload.trialBalance.balanced, "boolean");
     assert.equal(admin.response.headers.get("cache-control"), "private, no-store");
+    for (const [format, contentType] of [["csv", "text/csv"], ["xlsx", "spreadsheetml.sheet"], ["pdf", "application/pdf"]]) {
+      const exported = await expectStatus(api(`/api/admin/accounting?start=2026-01-01&end=2026-12-31&format=${format}`, { token: context.tokens.admin }), 200, `admin accounting ${format} export`);
+      assert.match(exported.response.headers.get("content-type") ?? "", new RegExp(contentType));
+      assert.equal(exported.response.headers.get("cache-control"), "private, no-store");
+    }
+    const reconciliation = await expectStatus(api("/api/admin/accounting", { method: "POST", token: context.tokens.admin, json: {
+      action: "reconcile", accountCode: "SALES", periodStart: "2026-01-01", periodEnd: "2026-12-31", statementPaise: 0, note: "Local integration statement check",
+    } }), 200, "accounting reconciliation review");
+    assert.equal(typeof reconciliation.payload.variancePaise, "number");
     const vendor = await expectStatus(api("/api/vendor/accounting?start=2026-01-01&end=2026-12-31", { token: context.tokens.vendor }), 200, "vendor accounting statements");
     assert.equal(vendor.payload.period.vendorId, context.vendorId);
     assert.equal(typeof vendor.payload.trialBalance.balanced, "boolean");

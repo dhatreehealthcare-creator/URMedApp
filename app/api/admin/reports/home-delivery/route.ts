@@ -1,15 +1,15 @@
 import { getD1 } from "../../../../../db/d1";
 import { requireAdminProfile } from "../../../../../lib/admin-access";
 import { errorResponse } from "../../../../../lib/auth-server";
-import { AdminReportError, csvResponse, loadAdminDeliveryReport, wantsCsv } from "../../../../../lib/admin-reporting";
+import { AdminReportError, loadAdminDeliveryReport, reportExportResponse, reportFormat } from "../../../../../lib/admin-reporting";
 
 export async function GET(request: Request) {
   try {
     await requireAdminProfile(request);
     const url = new URL(request.url);
     const result = await loadAdminDeliveryReport(getD1(), url);
-    if (wantsCsv(url)) {
-      return csvResponse("urmed-home-delivery-report.csv", [
+    const format = reportFormat(url); if (format !== "json") {
+      return reportExportResponse("urmed-home-delivery-report.csv", "URMED HOME DELIVERY REPORT", [
         "Order", "Store", "Method", "Status", "Rider", "Assignment status", "Payment method",
         "Payment status", "Delivery fee paise", "Order total paise", "Created at", "Assigned at",
         "Picked up at", "Delivered at", "Estimated straight-line distance km", "Elapsed minutes", "SLA status",
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
         row.assignmentStatus, row.paymentMethod, row.paymentStatus, row.deliveryFeePaise, row.orderTotalPaise,
         row.createdAt, row.assignedAt ?? "", row.pickedUpAt ?? "", row.deliveredAt ?? "",
         row.estimatedDistanceKm ?? "", row.elapsedMinutes, row.slaStatus,
-      ]));
+      ]), format);
     }
     return Response.json(result, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {

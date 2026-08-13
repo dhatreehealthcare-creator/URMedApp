@@ -1216,7 +1216,22 @@ export const ledgerEntries = sqliteTable("ledger_entries", {
   referenceId: integer("reference_id"),
   createdByProfileId: integer("created_by_profile_id").references(() => accountProfiles.id),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [index("ledger_entries_vendor_date_idx").on(table.vendorId, table.entryDate)]);
+  partyId: integer("party_id"),
+}, (table) => [index("ledger_entries_vendor_date_idx").on(table.vendorId, table.entryDate), index("ledger_entries_party_date_idx").on(table.partyId, table.entryDate)]);
+
+export const accountingParties = sqliteTable("accounting_parties", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  partyType: text("party_type", { enum: ["supplier", "customer"] }).notNull(),
+  partyRefId: integer("party_ref_id").notNull(),
+  displayName: text("display_name").notNull(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_parties_scope_ref_uidx").on(table.vendorId, table.partyType, table.partyRefId),
+  index("accounting_parties_scope_type_idx").on(table.vendorId, table.partyType, table.active),
+]);
 
 /** Governed account master used by statements; ledger_entries remains the immutable posting source. */
 export const chartAccounts = sqliteTable("chart_accounts", {
@@ -1283,6 +1298,27 @@ export const accountingReconciliations = sqliteTable("accounting_reconciliations
 }, (table) => [
   uniqueIndex("accounting_reconciliations_scope_uidx").on(table.vendorId, table.accountCode, table.periodStart, table.periodEnd),
   index("accounting_reconciliations_status_idx").on(table.vendorId, table.status, table.periodEnd),
+]);
+
+export const accountingReconciliationItems = sqliteTable("accounting_reconciliation_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  accountCode: text("account_code").notNull().references(() => chartAccounts.accountCode),
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  externalReference: text("external_reference").notNull(),
+  externalDate: text("external_date").notNull(),
+  amountPaise: integer("amount_paise").notNull(),
+  matchedLedgerEntryId: integer("matched_ledger_entry_id").references(() => ledgerEntries.id),
+  status: text("status", { enum: ["unmatched", "matched", "ignored"] }).notNull().default("unmatched"),
+  note: text("note").notNull().default(""),
+  createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  matchedByProfileId: integer("matched_by_profile_id").references(() => accountProfiles.id),
+  matchedAt: text("matched_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_reconciliation_items_ref_uidx").on(table.vendorId, table.accountCode, table.externalReference),
+  index("accounting_reconciliation_items_match_idx").on(table.vendorId, table.accountCode, table.status, table.externalDate),
 ]);
 
 export const notifications = sqliteTable("notifications", {

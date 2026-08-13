@@ -83,7 +83,8 @@ test("report parsers bound dates and CSV neutralizes spreadsheet formula injecti
   });
   assert.throws(() => parseReportDateRange(new URLSearchParams("dateFrom=2025-01-01&dateTo=2026-08-13"), new Date("2026-08-13")), AdminReportError);
   assert.match(reportCsv(["Name"], [["=HYPERLINK(\"bad\")"]]), /'=HYPERLINK/);
-  assert.throws(() => wantsCsv(new URL("https://urmed.test/api?format=xlsx")), AdminReportError);
+  assert.equal(wantsCsv(new URL("https://urmed.test/api?format=xlsx")), false);
+  assert.throws(() => wantsCsv(new URL("https://urmed.test/api?format=invalid")), AdminReportError);
 });
 
 test("stock report groups governed inventory and distinguishes physical, reserved, available, quarantine, and expiry", async (t) => {

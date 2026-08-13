@@ -49,3 +49,29 @@ test("accounting migration seeds legacy posting codes and immutable controls", a
   assert.match(migration, /accounting_opening_balances_no_delete/);
   assert.match(migration, /accounting_periods_closed_guard/);
 });
+
+test("party sub-ledger and export contracts are protected and deterministic", async () => {
+  const fs = await import("node:fs/promises");
+  const [route, policy] = await Promise.all([
+    fs.readFile("app/api/admin/accounting/route.ts", "utf8"),
+    fs.readFile("docs/ACCOUNTING_RECOGNITION_AND_CLOSING_POLICY.md", "utf8"),
+  ]);
+  assert.match(route, /partyType/);
+  assert.match(route, /format === "xlsx"/);
+  assert.match(route, /format === "pdf"/);
+  assert.match(policy, /Sales income is recognized only at completed fulfilment/);
+  assert.match(policy, /close permanently/);
+});
+
+test("all operational report routes expose csv, xlsx and pdf export contracts", async () => {
+  const fs = await import("node:fs/promises");
+  for (const file of ["expenses", "sales", "stock", "home-delivery"]) {
+    const route = await fs.readFile(`app/api/admin/reports/${file}/route.ts`, "utf8");
+    assert.match(route, /reportFormat/);
+    assert.match(route, /reportExportResponse/);
+  }
+  const reporting = await fs.readFile("lib/admin-reporting.ts", "utf8");
+  assert.match(reporting, /application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet/);
+  assert.match(reporting, /application\/pdf/);
+  assert.match(reporting, /private, no-store/);
+});

@@ -379,6 +379,20 @@
       "when": 1786589000000,
       "tag": "0053_accounting_statements",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1786590000000,
+      "tag": "0054_accounting_parties",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1786591000000,
+      "tag": "0055_reconciliation_matching",
+      "breakpoints": true
     }
   ]
 }
