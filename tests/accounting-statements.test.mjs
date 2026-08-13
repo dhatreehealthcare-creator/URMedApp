@@ -75,3 +75,20 @@ test("all operational report routes expose csv, xlsx and pdf export contracts", 
   assert.match(reporting, /application\/pdf/);
   assert.match(reporting, /private, no-store/);
 });
+
+test("reconciliation approval migration is immutable and supports staged imports", async () => {
+  const fs = await import("node:fs/promises");
+  const migration = await fs.readFile("drizzle/0056_reconciliation_approval.sql", "utf8");
+  assert.match(migration, /accounting_statement_imports/);
+  assert.match(migration, /accounting_reconciliation_matches/);
+  assert.match(migration, /accounting_policy_approvals/);
+  assert.match(migration, /accounting_policy_approvals_no_update/);
+  assert.match(migration, /accounting_reconciliation_matches_no_delete/);
+});
+
+test("reconciliation candidate matching is deterministic and tolerance-bounded", async () => {
+  const { findReconciliationCandidates } = await import("../lib/reconciliation-matching.ts");
+  const exact = findReconciliationCandidates({ items: [{ id: 1, amountPaise: 1000, externalDate: "2026-01-02", externalReference: "BANK-1" }], ledger: [{ id: 4, amountPaise: 1000, entryDate: "2026-01-02", description: "BANK-1" }], amountTolerancePaise: 0, dateToleranceDays: 0 });
+  assert.deepEqual(exact.map((candidate) => candidate.ledgerEntryId), [4]);
+  assert.equal(findReconciliationCandidates({ items: [{ id: 1, amountPaise: 1000, externalDate: "2026-01-02", externalReference: "" }], ledger: [{ id: 4, amountPaise: 1001, entryDate: "2026-01-05", description: "other" }], amountTolerancePaise: 0, dateToleranceDays: 0 }).length, 0);
+});

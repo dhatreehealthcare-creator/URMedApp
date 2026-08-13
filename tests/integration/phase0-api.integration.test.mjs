@@ -2033,6 +2033,15 @@ export async function runPhase0IntegrationSuite() {
     for (const privateValue of ["URMED Test Customer", "0000000001", "17.4318", "78.4073", "17.4321", "78.4076"]) {
       assert.equal(deliveryCsv.text.includes(privateValue), false, `delivery CSV must not expose ${privateValue}`);
     }
+    for (const report of ["stock", "sales", "expenses", "home-delivery"]) {
+      const query = report === "stock" ? stockQuery : report === "sales" ? salesQuery : report === "expenses" ? expenseQuery : deliveryQuery;
+      for (const format of ["xlsx", "pdf"]) {
+        const exported = await expectStatus(api(`/api/admin/reports/${report}?${query}&format=${format}`, { token: context.tokens.admin }), 200, `${report} ${format} report`);
+        assert.match(String(exported.response.headers.get("content-type") ?? ""), format === "xlsx" ? /spreadsheetml/ : /application\/pdf/);
+        assert.equal(exported.response.headers.get("cache-control"), "private, no-store");
+        assert.ok(exported.bytes?.length > 100, `${report} ${format} export must contain bytes`);
+      }
+    }
   });
 
   await scenario("R2 uploads enforce validation, ownership, and metadata failure cleanup", async () => {

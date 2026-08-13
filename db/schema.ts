@@ -1321,6 +1321,60 @@ export const accountingReconciliationItems = sqliteTable("accounting_reconciliat
   index("accounting_reconciliation_items_match_idx").on(table.vendorId, table.accountCode, table.status, table.externalDate),
 ]);
 
+export const accountingStatementImports = sqliteTable("accounting_statement_imports", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  accountCode: text("account_code").notNull().references(() => chartAccounts.accountCode),
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  sourceName: text("source_name").notNull(),
+  sourceChecksum: text("source_checksum").notNull(),
+  rowCount: integer("row_count").notNull(),
+  status: text("status", { enum: ["staged", "approved", "reversed"] }).notNull().default("staged"),
+  importedByProfileId: integer("imported_by_profile_id").notNull().references(() => accountProfiles.id),
+  approvedByProfileId: integer("approved_by_profile_id").references(() => accountProfiles.id),
+  approvedAt: text("approved_at"),
+  reversedByProfileId: integer("reversed_by_profile_id").references(() => accountProfiles.id),
+  reversedAt: text("reversed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_statement_imports_checksum_uidx").on(table.vendorId, table.accountCode, table.sourceChecksum),
+  index("accounting_statement_imports_scope_date_idx").on(table.vendorId, table.accountCode, table.periodEnd),
+]);
+
+export const accountingReconciliationMatches = sqliteTable("accounting_reconciliation_matches", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  reconciliationItemId: integer("reconciliation_item_id").notNull().references(() => accountingReconciliationItems.id),
+  ledgerEntryId: integer("ledger_entry_id").notNull().references(() => ledgerEntries.id),
+  amountPaise: integer("amount_paise").notNull(),
+  status: text("status", { enum: ["proposed", "approved", "reversed"] }).notNull().default("proposed"),
+  createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  approvedByProfileId: integer("approved_by_profile_id").references(() => accountProfiles.id),
+  approvedAt: text("approved_at"),
+  reversedByProfileId: integer("reversed_by_profile_id").references(() => accountProfiles.id),
+  reversedAt: text("reversed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_reconciliation_matches_pair_uidx").on(table.reconciliationItemId, table.ledgerEntryId),
+  index("accounting_reconciliation_matches_item_status_idx").on(table.reconciliationItemId, table.status),
+  check("accounting_reconciliation_matches_amount_check", sql`${table.amountPaise} > 0`),
+]);
+
+/** External accountant approval is recorded here; no code path may infer approval from an admin login. */
+export const accountingPolicyApprovals = sqliteTable("accounting_policy_approvals", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  policyKey: text("policy_key").notNull(),
+  policyVersion: text("policy_version").notNull(),
+  decision: text("decision", { enum: ["approved", "revoked"] }).notNull(),
+  approvalReference: text("approval_reference").notNull(),
+  approvedByProfileId: integer("approved_by_profile_id").notNull().references(() => accountProfiles.id),
+  approvedAt: text("approved_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_policy_approvals_version_uidx").on(table.policyKey, table.policyVersion),
+  index("accounting_policy_approvals_active_idx").on(table.policyKey, table.decision, table.approvedAt),
+]);
+
 export const notifications = sqliteTable("notifications", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   profileId: integer("profile_id").references(() => accountProfiles.id),

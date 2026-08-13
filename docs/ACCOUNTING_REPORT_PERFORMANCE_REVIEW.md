@@ -9,6 +9,8 @@
 
 ## Benchmark policy
 
+The repository includes `node scripts/benchmark-report-plans.mjs` as a deterministic local smoke check for the ledger and order report predicates. It records the observed SQLite plans in `/tmp/urmed-report-query-plans.json` and is intentionally not treated as the production-scale benchmark.
+
 Before production cutover, run `EXPLAIN QUERY PLAN` for each report against a representative anonymized D1 snapshot and record execution time at 10k, 100k, and 1m ledger/order rows. Any full scan on date/vendor predicates must receive a reviewed index or a bounded archival strategy. Hosted D1 performance cannot be inferred from local SQLite alone.
 
 ## Accounting approval gate

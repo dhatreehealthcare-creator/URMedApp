@@ -65,6 +65,22 @@ export async function POST(request: Request) {
       await appendAuditEvent({ actorProfileId: profile.id, action: active ? "pill_reminder.enabled" : "pill_reminder.disabled", entityType: "pill_reminder", entityId: id, after: { active: Boolean(active) }, requestId: request.headers.get("cf-ray") ?? "" });
       return Response.json({ updated: true }, { headers: privateResponseHeaders });
     }
+    if (action === "update_reminder") {
+      const id = Number(body.id); const medicineName = String(body.medicineName ?? "").trim().slice(0, 160); const dosage = String(body.dosageInstructions ?? "").trim().slice(0, 300); const reminderTime = String(body.reminderTime ?? "").trim(); const startDate = dateValue(body.startDate)!; const endDate = dateValue(body.endDate, true); const recurrenceRule = String(body.recurrenceRule ?? "daily");
+      if (!Number.isInteger(id) || id < 1 || !medicineName || !/^([01]\d|2[0-3]):[0-5]\d$/.test(reminderTime) || !new Set(["daily", "weekdays", "weekly"]).has(recurrenceRule) || (endDate && endDate < startDate)) return Response.json({ error: "Reminder details are invalid" }, { status: 400, headers: privateResponseHeaders });
+      const result = await db.prepare(`UPDATE pill_reminders SET medicine_name=?,dosage_instructions=?,reminder_time=?,start_date=?,end_date=?,recurrence_rule=? WHERE id=? AND customer_profile_id=?`).bind(medicineName, dosage, reminderTime, startDate, endDate, recurrenceRule, id, profile.id).run();
+      if (!result.meta.changes) return Response.json({ error: "Reminder not found" }, { status: 404, headers: privateResponseHeaders });
+      await appendAuditEvent({ actorProfileId: profile.id, action: "pill_reminder.updated", entityType: "pill_reminder", entityId: id, after: { medicineName, reminderTime, startDate, endDate, recurrenceRule }, requestId: request.headers.get("cf-ray") ?? "" });
+      return Response.json({ updated: true }, { headers: privateResponseHeaders });
+    }
+    if (action === "delete_reminder") {
+      const id = Number(body.id);
+      if (!Number.isInteger(id) || id < 1) return Response.json({ error: "Reminder is invalid" }, { status: 400, headers: privateResponseHeaders });
+      const result = await db.prepare("UPDATE pill_reminders SET active=0,end_date=COALESCE(end_date,date('now')) WHERE id=? AND customer_profile_id=? AND active=1").bind(id, profile.id).run();
+      if (!result.meta.changes) return Response.json({ error: "Reminder not found or already inactive" }, { status: 404, headers: privateResponseHeaders });
+      await appendAuditEvent({ actorProfileId: profile.id, action: "pill_reminder.deleted", entityType: "pill_reminder", entityId: id, after: { active: false }, requestId: request.headers.get("cf-ray") ?? "" });
+      return Response.json({ deleted: true }, { headers: privateResponseHeaders });
+    }
     if (action === "consent") {
       const purpose = String(body.purpose ?? ""); const granted = Boolean(body.granted);
       if (!purposes.has(purpose)) return Response.json({ error: "Consent purpose is invalid" }, { status: 400 });

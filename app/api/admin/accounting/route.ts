@@ -3,6 +3,7 @@ import { requireAdminProfile } from "../../../../lib/admin-access";
 import { errorResponse } from "../../../../lib/auth-server";
 import { getAccountingStatements, getPartySubledger, statementCsv, statementPdf, statementXlsx, validateAccountingPeriod } from "../../../../lib/accounting-statements";
 import { appendAuditEvent } from "../../../../lib/audit";
+import { findReconciliationCandidates } from "../../../../lib/reconciliation-matching";
 
 const headers = { "Cache-Control": "private, no-store" };
 
@@ -85,6 +86,80 @@ export async function POST(request: Request) {
       if (!result.meta.changes) return Response.json({ error: "Reconciliation item is already resolved or ledger scope does not match" }, { status: 409, headers });
       await appendAuditEvent({ actorProfileId: profile.id, action: "accounting.reconciliation_item.matched", entityType: "accounting_reconciliation_item", entityId: String(id), after: { ledgerEntryId }, requestId: request.headers.get("cf-ray") ?? "" });
       return Response.json({ matched: true }, { headers });
+    }
+    if (action === "import_statement") {
+      const vendorId = body.vendorId == null || body.vendorId === "" ? null : Number(body.vendorId);
+      const accountCode = String(body.accountCode ?? "").trim().toUpperCase();
+      const sourceName = String(body.sourceName ?? "statement.csv").trim().slice(0, 160);
+      const sourceChecksum = String(body.sourceChecksum ?? "").trim().slice(0, 128);
+      const rows = Array.isArray(body.rows) ? body.rows as Array<Record<string, unknown>> : [];
+      const periodStart = String(body.periodStart ?? ""), periodEnd = String(body.periodEnd ?? "");
+      validateAccountingPeriod(periodStart, periodEnd);
+      if (!accountCode || !sourceChecksum || rows.length > 10000) return Response.json({ error: "Statement import is invalid" }, { status: 400, headers });
+      const existing = await db.prepare("SELECT id,status FROM accounting_statement_imports WHERE vendor_id IS ? AND account_code=? AND source_checksum=? LIMIT 1").bind(vendorId, accountCode, sourceChecksum).first<{ id: number; status: string }>();
+      if (existing) return Response.json({ error: "This statement has already been imported", importId: existing.id, status: existing.status }, { status: 409, headers });
+      const normalizedRows = rows.map((row, index) => {
+        const externalReference = String(row.externalReference ?? row.reference ?? `${sourceName}:${index + 1}`).trim().slice(0, 120);
+        const externalDate = String(row.externalDate ?? row.date ?? "");
+        const amountPaise = Number(row.amountPaise ?? Math.round(Number(row.amount ?? 0) * 100));
+        if (!externalReference || !/^\d{4}-\d{2}-\d{2}$/.test(externalDate) || !Number.isInteger(amountPaise) || amountPaise < 0) throw new Error(`Statement row ${index + 1} is invalid`);
+        return { externalReference, externalDate, amountPaise, note: String(row.note ?? "").trim().slice(0, 300) };
+      });
+      const statements = [db.prepare(`INSERT INTO accounting_statement_imports (vendor_id,account_code,period_start,period_end,source_name,source_checksum,row_count,imported_by_profile_id) VALUES (?,?,?,?,?,?,?,?)`).bind(vendorId, accountCode, periodStart, periodEnd, sourceName, sourceChecksum, normalizedRows.length, profile.id)];
+      for (const row of normalizedRows) statements.push(db.prepare(`INSERT INTO accounting_reconciliation_items (vendor_id,account_code,period_start,period_end,external_reference,external_date,amount_paise,note,created_by_profile_id) VALUES (?,?,?,?,?,?,?,?,?)`).bind(vendorId, accountCode, periodStart, periodEnd, row.externalReference, row.externalDate, row.amountPaise, row.note, profile.id));
+      const result = await db.batch(statements);
+      return Response.json({ imported: true, importId: result[0]?.meta.last_row_id ?? null, rowCount: rows.length, status: "staged" }, { status: 201, headers });
+    }
+    if (action === "list_reconciliation") {
+      const vendorId = body.vendorId == null || body.vendorId === "" ? null : Number(body.vendorId);
+      const accountCode = String(body.accountCode ?? "").trim().toUpperCase();
+      const rows = await db.prepare(`SELECT item.id,item.external_reference AS externalReference,item.external_date AS externalDate,item.amount_paise AS amountPaise,item.status,item.note,COALESCE(SUM(CASE WHEN match.status='approved' THEN match.amount_paise ELSE 0 END),0) AS matchedPaise FROM accounting_reconciliation_items item LEFT JOIN accounting_reconciliation_matches match ON match.reconciliation_item_id=item.id WHERE (item.vendor_id IS ? OR (? IS NOT NULL AND item.vendor_id=?)) AND (?='' OR item.account_code=?) GROUP BY item.id ORDER BY date(item.external_date),item.id LIMIT 1000`).bind(vendorId, vendorId, vendorId, accountCode, accountCode).all();
+      return Response.json({ items: rows.results }, { headers });
+    }
+    if (action === "suggest_reconciliation_matches") {
+      const vendorId = body.vendorId == null || body.vendorId === "" ? null : Number(body.vendorId);
+      const accountCode = String(body.accountCode ?? "").trim().toUpperCase();
+      const amountTolerancePaise = Number(body.amountTolerancePaise ?? 0);
+      const dateToleranceDays = Number(body.dateToleranceDays ?? 0);
+      if (!accountCode || !Number.isInteger(amountTolerancePaise) || amountTolerancePaise < 0 || !Number.isInteger(dateToleranceDays) || dateToleranceDays < 0) return Response.json({ error: "Matching tolerance is invalid" }, { status: 400, headers });
+      const items = await db.prepare("SELECT id,amount_paise AS amountPaise,external_date AS externalDate,external_reference AS externalReference FROM accounting_reconciliation_items WHERE vendor_id IS ? AND account_code=? AND status='unmatched' LIMIT 1000").bind(vendorId, accountCode).all();
+      const ledger = await db.prepare("SELECT id,ABS(debit_paise-credit_paise) AS amountPaise,entry_date AS entryDate,description FROM ledger_entries WHERE vendor_id IS ? AND account_code=? ORDER BY entry_date,id LIMIT 5000").bind(vendorId, accountCode).all();
+      return Response.json({ candidates: findReconciliationCandidates({ items: items.results as Array<{ id:number; amountPaise:number; externalDate:string; externalReference:string }>, ledger: ledger.results as Array<{ id:number; amountPaise:number; entryDate:string; description:string }>, amountTolerancePaise, dateToleranceDays }), tolerance: { amountTolerancePaise, dateToleranceDays } }, { headers });
+    }
+    if (action === "propose_reconciliation_match") {
+      const itemId = Number(body.reconciliationItemId), ledgerEntryId = Number(body.ledgerEntryId), amountPaise = Number(body.amountPaise);
+      if (!Number.isInteger(itemId) || itemId < 1 || !Number.isInteger(ledgerEntryId) || ledgerEntryId < 1 || !Number.isInteger(amountPaise) || amountPaise <= 0) return Response.json({ error: "Reconciliation match is invalid" }, { status: 400, headers });
+      const item = await db.prepare("SELECT amount_paise AS amountPaise, vendor_id AS vendorId, account_code AS accountCode FROM accounting_reconciliation_items WHERE id=? AND status='unmatched'").bind(itemId).first<{ amountPaise: number; vendorId: number | null; accountCode: string }>();
+      const ledger = await db.prepare("SELECT vendor_id AS vendorId,account_code AS accountCode FROM ledger_entries WHERE id=?").bind(ledgerEntryId).first<{ vendorId: number | null; accountCode: string }>();
+      if (!item || !ledger || item.accountCode !== ledger.accountCode || item.vendorId !== ledger.vendorId || amountPaise > Number(item.amountPaise)) return Response.json({ error: "The proposed match is outside the item and ledger scope" }, { status: 409, headers });
+      const result = await db.prepare("INSERT INTO accounting_reconciliation_matches (reconciliation_item_id,ledger_entry_id,amount_paise,created_by_profile_id) VALUES (?,?,?,?) ON CONFLICT(reconciliation_item_id,ledger_entry_id) DO NOTHING").bind(itemId, ledgerEntryId, amountPaise, profile.id).run();
+      if (!result.meta.changes) return Response.json({ error: "This ledger match already exists" }, { status: 409, headers });
+      return Response.json({ proposed: true, matchId: result.meta.last_row_id }, { status: 201, headers });
+    }
+    if (action === "approve_reconciliation_match") {
+      const matchId = Number(body.matchId);
+      if (!Number.isInteger(matchId) || matchId < 1) return Response.json({ error: "Match is invalid" }, { status: 400, headers });
+      const result = await db.prepare("UPDATE accounting_reconciliation_matches SET status='approved',approved_by_profile_id=?,approved_at=CURRENT_TIMESTAMP WHERE id=? AND status='proposed'").bind(profile.id, matchId).run();
+      if (!result.meta.changes) return Response.json({ error: "Match is already approved or unavailable" }, { status: 409, headers });
+      await appendAuditEvent({ actorProfileId: profile.id, action: "accounting.reconciliation_match.approved", entityType: "accounting_reconciliation_match", entityId: String(matchId), after: { status: "approved" }, requestId: request.headers.get("cf-ray") ?? "" });
+      return Response.json({ approved: true }, { headers });
+    }
+    if (action === "reverse_reconciliation_match") {
+      const matchId = Number(body.matchId);
+      if (!Number.isInteger(matchId) || matchId < 1) return Response.json({ error: "Match is invalid" }, { status: 400, headers });
+      const result = await db.prepare("UPDATE accounting_reconciliation_matches SET status='reversed',reversed_by_profile_id=?,reversed_at=CURRENT_TIMESTAMP WHERE id=? AND status='approved'").bind(profile.id, matchId).run();
+      if (!result.meta.changes) return Response.json({ error: "Only an approved match can be reversed" }, { status: 409, headers });
+      await appendAuditEvent({ actorProfileId: profile.id, action: "accounting.reconciliation_match.reversed", entityType: "accounting_reconciliation_match", entityId: String(matchId), after: { status: "reversed" }, requestId: request.headers.get("cf-ray") ?? "" });
+      return Response.json({ reversed: true }, { headers });
+    }
+    if (action === "policy_approval") {
+      const policyKey = String(body.policyKey ?? "").trim().slice(0, 120), policyVersion = String(body.policyVersion ?? "").trim().slice(0, 40), approvalReference = String(body.approvalReference ?? "").trim().slice(0, 240);
+      const decision = body.decision === "revoked" ? "revoked" : "approved";
+      if (!policyKey || !policyVersion || approvalReference.length < 5) return Response.json({ error: "Policy approval requires a version and signed reference" }, { status: 400, headers });
+      const result = await db.prepare("INSERT INTO accounting_policy_approvals (policy_key,policy_version,decision,approval_reference,approved_by_profile_id) VALUES (?,?,?,?,?) ON CONFLICT(policy_key,policy_version) DO NOTHING").bind(policyKey, policyVersion, decision, approvalReference, profile.id).run();
+      if (!result.meta.changes) return Response.json({ error: "This policy version already has an immutable decision" }, { status: 409, headers });
+      await appendAuditEvent({ actorProfileId: profile.id, action: `accounting.policy.${decision}`, entityType: "accounting_policy_approval", entityId: `${policyKey}:${policyVersion}`, after: { policyKey, policyVersion, decision, approvalReference }, requestId: request.headers.get("cf-ray") ?? "" });
+      return Response.json({ recorded: true, decision, policyKey, policyVersion }, { status: 201, headers });
     }
     return Response.json({ error: "Accounting action is invalid" }, { status: 400, headers });
   } catch (error) { return errorResponse(error); }

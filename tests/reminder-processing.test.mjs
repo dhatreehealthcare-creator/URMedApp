@@ -176,3 +176,11 @@ test("Worker dispatches recovery, reminder, and vendor-alert cron events indepen
   assert.match(route, /processDueReminders/);
   assert.match(route, /getRuntimeEnv\(\)\.REMINDER_JOB_SECRET/);
 });
+
+test("customer safety route supports reminder update and delete actions", async () => {
+  const route = await (await import("node:fs/promises")).readFile("app/api/customer/safety/route.ts", "utf8");
+  assert.match(route, /action === "update_reminder"/);
+  assert.match(route, /action === "delete_reminder"/);
+  assert.match(route, /pill_reminder\.updated/);
+  assert.match(route, /pill_reminder\.deleted/);
+});

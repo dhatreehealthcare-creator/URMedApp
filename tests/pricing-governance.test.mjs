@@ -43,3 +43,14 @@ test("pricing API and migration expose governance routes and immutable history",
   assert.match(migration, /inventory_price_history_no_update/);
   assert.match(migration, /sale_price_paise` <= `mrp_paise/);
 });
+
+test("pricing management surfaces vendor history and admin GTIN review", async () => {
+  const fs = await import("node:fs/promises");
+  const [component, adminRoute] = await Promise.all([
+    fs.readFile("app/pricing-governance-center.tsx", "utf8"),
+    fs.readFile("app/api/admin/pricing/route.ts", "utf8"),
+  ]);
+  assert.match(component, /Price history/);
+  assert.match(component, /barcode_approve/);
+  assert.match(adminRoute, /export async function GET/);
+});

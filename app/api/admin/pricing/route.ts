@@ -4,6 +4,21 @@ import { errorResponse } from "../../../../lib/auth-server";
 
 const headers = { "Cache-Control": "private, no-store" };
 
+export async function GET(request: Request) {
+  try {
+    await requireAdminProfile(request);
+    const db = getD1(); const params = new URL(request.url).searchParams; const inventoryId = Number(params.get("inventoryId") ?? 0);
+    if (!Number.isInteger(inventoryId) || inventoryId < 1) return Response.json({ error: "Choose a valid inventory batch" }, { status: 400, headers });
+    const inventory = await db.prepare("SELECT product_id AS productId FROM pharmacy_inventory WHERE id=?").bind(inventoryId).first<{ productId: number }>();
+    if (!inventory) return Response.json({ error: "Inventory batch was not found" }, { status: 404, headers });
+    const [prices, barcodes] = await db.batch([
+      db.prepare("SELECT id,inventory_id AS inventoryId,sale_price_paise AS salePricePaise,mrp_paise AS mrpPaise,effective_from AS effectiveFrom,reason FROM inventory_price_history WHERE product_id=? ORDER BY effective_from DESC,id DESC").bind(inventory.productId),
+      db.prepare("SELECT id,product_id AS productId,code,symbology,status,review_reason AS reviewReason FROM product_barcodes WHERE product_id=? ORDER BY id DESC").bind(inventory.productId),
+    ]);
+    return Response.json({ productId: inventory.productId, prices: prices.results, barcodes: barcodes.results }, { headers });
+  } catch (error) { return errorResponse(error); }
+}
+
 export async function PATCH(request: Request) {
   try {
     const profile = await requireAdminProfile(request);
