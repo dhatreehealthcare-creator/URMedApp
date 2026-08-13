@@ -2,7 +2,7 @@ import { getD1 } from "../../../../../db/d1";
 import { appendAuditEvent } from "../../../../../lib/audit";
 import { errorResponse } from "../../../../../lib/auth-server";
 import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
-import { enqueueTransactionalEmail } from "../../../../../lib/transactional-email-outbox";
+import { prepareTransactionalEmailEnqueueStatement } from "../../../../../lib/transactional-email-outbox";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
 
 type MedicineInput = { medicineText?: unknown; dosageText?: unknown; durationText?: unknown; quantityApproved?: unknown };
@@ -105,6 +105,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           updated_at = CURRENT_TIMESTAMP WHERE prescription_id = ? AND order_status <> 'cancelled'`).bind(prescriptionId),
       );
     }
+    statements.push(prepareTransactionalEmailEnqueueStatement(db, {
+      profileId: prescription.customerProfileId,
+      eventType: "prescription_reviewed",
+      payload: { prescriptionNumber: prescription.prescriptionNumber,
+        decision: decision as "approved" | "rejected" | "clarification_required" },
+      dedupeKey: `prescription_reviewed:${prescriptionId}:${decision}`,
+      whenPreviousStatementChanged: true,
+    }));
     try {
       await db.batch(statements);
     } catch (error) {
@@ -114,13 +122,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       throw error;
     }
     await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: `prescription.${decision}`, entityType: "prescription", entityId: prescriptionId, after: { decision, notes, medicines, pharmacistId: pharmacist.id }, requestId: request.headers.get("cf-ray") ?? "" });
-    await enqueueTransactionalEmail(db, {
-      profileId: prescription.customerProfileId,
-      eventType: "prescription_reviewed",
-      payload: { prescriptionNumber: prescription.prescriptionNumber,
-        decision: decision as "approved" | "rejected" | "clarification_required" },
-      dedupeKey: `prescription_reviewed:${prescriptionId}:${decision}`,
-    });
     return Response.json({ reviewed: true, decision, pharmacist: pharmacist.fullName });
   } catch (error) {
     return errorResponse(error);

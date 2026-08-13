@@ -50,6 +50,14 @@ function fixture(t) {
       profile_id INTEGER NOT NULL,category TEXT NOT NULL,in_app_enabled INTEGER NOT NULL,email_enabled INTEGER NOT NULL,
       time_zone TEXT NOT NULL,UNIQUE(profile_id,category)
     );
+    CREATE TABLE transactional_email_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,profile_id INTEGER NOT NULL,recipient_email TEXT NOT NULL,
+      category TEXT NOT NULL,event_type TEXT NOT NULL,payload_json TEXT NOT NULL,dedupe_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'queued',attempt_count INTEGER NOT NULL DEFAULT 0,max_attempts INTEGER NOT NULL DEFAULT 5,
+      next_attempt_at TEXT NOT NULL,lease_owner TEXT NOT NULL DEFAULT '',lease_expires_at TEXT,
+      provider_message_id TEXT NOT NULL DEFAULT '',last_error_code TEXT NOT NULL DEFAULT '',last_error_reason TEXT NOT NULL DEFAULT '',
+      sent_at TEXT,dead_lettered_at TEXT,cancelled_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE refill_reminders (
       id INTEGER PRIMARY KEY,customer_profile_id INTEGER NOT NULL,vendor_id INTEGER NOT NULL,
       medicine_name TEXT NOT NULL,due_date TEXT NOT NULL,reminder_lead_days INTEGER NOT NULL,
@@ -129,19 +137,22 @@ test("scheduled reminders enforce latest consent, active accounts, due time, and
   };
   const first = await processDueReminders(input);
   assert.deepEqual(first.processed, { refills: 1, pills: 2, total: 3 });
-  assert.deepEqual(first.email, { sent: 3, unavailableOrFailed: 0, notEnabled: 0 });
-  assert.equal(emailCalls.length, 3);
+  assert.deepEqual(first.email, { queued: 3, sent: 0, unavailableOrFailed: 0, notEnabled: 0 });
+  assert.equal(emailCalls.length, 0, "reminder processing must not call the provider inline");
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transactional_email_outbox").get().count, 3);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM notifications").get().count, 2,
     "email-only reminder delivery must not create an in-app event after opt-out");
   assert.equal(sqlite.prepare("SELECT last_notified_at AS value FROM refill_reminders WHERE id=10").get().value, "2026-08-13T10:05:00");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action='reminders.processed'").get().count, 1);
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action='reminder.email_sent'").get().count, 1);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action='reminder.email_sent'").get().count, 0,
+    "provider delivery is owned by the transactional outbox worker");
 
   const repeated = await processDueReminders(input);
   assert.deepEqual(repeated.processed, { refills: 0, pills: 0, total: 0 });
-  assert.equal(emailCalls.length, 3);
+  assert.equal(emailCalls.length, 0);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM notifications").get().count, 2);
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_events").get().count, 2,
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transactional_email_outbox").get().count, 3);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_events").get().count, 1,
     "a no-op scheduler retry must not amplify audit storage");
 });
 
@@ -154,10 +165,11 @@ test("Worker dispatches recovery, reminder, and vendor-alert cron events indepen
   ]);
   assert.match(worker, /controller\.cron === RESERVATION_RECOVERY_CRON/);
   assert.match(worker, /controller\.cron === REMINDER_PROCESSING_CRON/);
+  assert.match(worker, /controller\.cron === TRANSACTIONAL_EMAIL_OUTBOX_CRON/);
   assert.match(worker, /controller\.cron === VENDOR_INVENTORY_ALERT_CRON/);
   assert.match(worker, /processDueReminders\(\{[\s\S]*now: controller\.scheduledTime/);
   assert.match(worker, /generateVendorInventoryAlerts\(\{[\s\S]*processingDate/);
-  assert.match(vite, /crons: \[RESERVATION_RECOVERY_CRON, REMINDER_PROCESSING_CRON, VENDOR_INVENTORY_ALERT_CRON\]/);
+  assert.match(vite, /crons: \[RESERVATION_RECOVERY_CRON, REMINDER_PROCESSING_CRON, VENDOR_INVENTORY_ALERT_CRON, TRANSACTIONAL_EMAIL_OUTBOX_CRON\]/);
   assert.match(artifact, /wrangler\.triggers\?\.crons\?\.includes\("\*\/15 \* \* \* \*"\)/);
   assert.match(artifact, /wrangler\.triggers\?\.crons\?\.includes\("30 0 \* \* \*"\)/);
   assert.match(route, /getDueReminderCounts/);

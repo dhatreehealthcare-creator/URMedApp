@@ -167,7 +167,7 @@ test("migration, API, UI, and notification call sites encode the profile-owned c
   assert.match(route, /requireLocalProfile\(request, \["customer", "vendor"\]/);
   assert.match(ui, /SMS is unavailable/);
   assert.match(docs, /P5-05 defines eligibility only/);
-  assert.match(orderCreate, /emailChannelEligibility\(db, profile\.id, "transactional"\)/);
-  assert.match(orderTracking, /emailChannelEligibility\(db, order\.customerProfileId, "transactional"\)/);
-  assert.match(prescriptionReview, /emailChannelEligibility\(db, prescription\.customerProfileId, "safety"\)/);
+  assert.match(orderCreate, /prepareTransactionalEmailEnqueueStatement\(db, \{/);
+  assert.match(orderTracking, /prepareTransactionalEmailEnqueueStatement\(db, \{/);
+  assert.match(prescriptionReview, /prepareTransactionalEmailEnqueueStatement\(db, \{/);
 });

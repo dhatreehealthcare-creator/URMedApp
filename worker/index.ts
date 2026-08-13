@@ -3,8 +3,9 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { runReservationRecovery } from "../lib/reservation-recovery.ts";
 import { processDueReminders, reminderProcessingWindow } from "../lib/reminder-processing.ts";
-import { REMINDER_PROCESSING_CRON, RESERVATION_RECOVERY_CRON, VENDOR_INVENTORY_ALERT_CRON } from "../lib/scheduled-job-config.ts";
+import { REMINDER_PROCESSING_CRON, RESERVATION_RECOVERY_CRON, TRANSACTIONAL_EMAIL_OUTBOX_CRON, VENDOR_INVENTORY_ALERT_CRON } from "../lib/scheduled-job-config.ts";
 import { generateVendorInventoryAlerts } from "../lib/vendor-inventory-alerts.ts";
+import { processTransactionalEmailOutbox } from "../lib/transactional-email-outbox.ts";
 import { withSecurityHeaders } from "../lib/security-headers.ts";
 
 interface Env {
@@ -122,6 +123,28 @@ const worker = {
         });
       }).catch((error) => {
         console.error("Scheduled vendor inventory alert processing failed", error);
+        throw error;
+      }));
+      return;
+    }
+    if (controller.cron === TRANSACTIONAL_EMAIL_OUTBOX_CRON) {
+      ctx.waitUntil(processTransactionalEmailOutbox({
+        db: env.DB,
+        leaseOwner: `worker:${controller.scheduledTime}`,
+        now: controller.scheduledTime,
+      }).then((result) => {
+        console.info("Scheduled transactional email outbox processing completed", {
+          cron: controller.cron,
+          policyVersion: result.policyVersion,
+          claimed: result.claimed,
+          sent: result.sent,
+          retryWaiting: result.retryWaiting,
+          deadLettered: result.deadLettered,
+          cancelled: result.cancelled,
+          remainingDue: result.remainingDue,
+        });
+      }).catch((error) => {
+        console.error("Scheduled transactional email outbox processing failed", error);
         throw error;
       }));
       return;

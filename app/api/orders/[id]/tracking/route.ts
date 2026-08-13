@@ -3,7 +3,7 @@ import { appendAuditEvent } from "../../../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../../../lib/auth-server";
 import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
 import { nextDeliveryStatuses, orderStatusForDeliveryStatus, workflowStatusLabels, type DeliveryMethod, type WorkflowRole } from "../../../../../lib/order-workflow";
-import { enqueueTransactionalEmail } from "../../../../../lib/transactional-email-outbox";
+import { prepareTransactionalEmailEnqueueStatement } from "../../../../../lib/transactional-email-outbox";
 import { canCustomerCancelOrder } from "../../../../../lib/customer-order-history";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
 import { prepareOnlineTaxInvoiceStatement } from "../../../../../lib/tax-invoice";
@@ -219,16 +219,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           FROM orders WHERE id = ? AND delivery_status = 'delivered'`).bind(orderId),
       );
     }
-    const results = await db.batch(statements);
-    if (!results[eventIndex]?.meta.changes) return privateJson({ error: "The order changed. Refresh before taking the next action." }, { status: 409 });
-
-    await appendAuditEvent({ vendorId: order.vendorId, actorProfileId: profile.id, action: `order.${status}`, entityType: "order", entityId: orderId, before: { orderStatus: order.orderStatus, deliveryStatus: order.deliveryStatus }, after: { orderStatus: orderStatusForDeliveryStatus(status), deliveryStatus: status, note, locationProof: locationProof ? { capturedAt: locationProof.capturedAt, accuracy: locationProof.accuracy } : undefined }, requestId: request.headers.get("cf-ray") ?? "" });
-    await enqueueTransactionalEmail(db, {
+    statements.push(prepareTransactionalEmailEnqueueStatement(db, {
       profileId: order.customerProfileId,
       eventType: "order_status_changed",
       payload: { orderNumber: order.orderNumber, status: workflowStatusLabels[status], refillCreated: status === "delivered" },
       dedupeKey: `order_status:${orderId}:${status}`,
-    });
+      whenPreviousStatementChanged: true,
+    }));
+    const results = await db.batch(statements);
+    if (!results[eventIndex]?.meta.changes) return privateJson({ error: "The order changed. Refresh before taking the next action." }, { status: 409 });
+
+    await appendAuditEvent({ vendorId: order.vendorId, actorProfileId: profile.id, action: `order.${status}`, entityType: "order", entityId: orderId, before: { orderStatus: order.orderStatus, deliveryStatus: order.deliveryStatus }, after: { orderStatus: orderStatusForDeliveryStatus(status), deliveryStatus: status, note, locationProof: locationProof ? { capturedAt: locationProof.capturedAt, accuracy: locationProof.accuracy } : undefined }, requestId: request.headers.get("cf-ray") ?? "" });
     return privateJson({ updated: true, status, label: workflowStatusLabels[status] });
   } catch (error) {
     return errorResponse(error);

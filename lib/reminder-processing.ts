@@ -1,6 +1,6 @@
 import { appendAuditEvent } from "./audit.ts";
-import { sendTransactionalEmail } from "./resend.ts";
 import { REMINDER_PROCESSING_CRON } from "./scheduled-job-config.ts";
+import { prepareTransactionalEmailEnqueueStatement } from "./transactional-email-outbox.ts";
 
 export { REMINDER_PROCESSING_CRON };
 export const REMINDER_DEFAULT_TIME_ZONE = "Asia/Kolkata";
@@ -39,8 +39,6 @@ type DuePill = {
   lastEmailLocalDate: string | null;
 };
 
-type EmailResult = { sent: boolean; reason?: string };
-
 export type ReminderProcessingWindow = {
   localDate: string;
   localTime: string;
@@ -50,7 +48,7 @@ export type ReminderProcessingWindow = {
 export type ReminderProcessingResult = {
   window: ReminderProcessingWindow;
   processed: { refills: number; pills: number; total: number };
-  email: { sent: number; unavailableOrFailed: number; notEnabled: number };
+  email: { queued: number; sent: number; unavailableOrFailed: number; notEnabled: number };
 };
 
 export type ProcessRemindersInput = {
@@ -60,7 +58,8 @@ export type ProcessRemindersInput = {
   requestId?: string;
   limit?: number;
   timeZone?: string;
-  sendEmail?: (to: string, subject: string, html: string) => Promise<EmailResult>;
+  /** @deprecated Email delivery is now handled by the transactional outbox worker. */
+  sendEmail?: (to: string, subject: string, html: string) => Promise<{ sent: boolean; reason?: string }>;
   appendAudit?: boolean;
 };
 
@@ -176,11 +175,6 @@ export function reminderProcessingWindow(
   return { localDate, localTime, timeZone };
 }
 
-function html(value: string) {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-}
-
 export async function getDueReminderCounts(input: Pick<ProcessRemindersInput, "db" | "now" | "timeZone">) {
   const window = reminderProcessingWindow(input.now, input.timeZone);
   const due = await dueReminderRows({ ...input, limit: 500 });
@@ -196,15 +190,15 @@ export async function getDueReminderCounts(input: Pick<ProcessRemindersInput, "d
 export async function processDueReminders(input: ProcessRemindersInput): Promise<ReminderProcessingResult> {
   const window = reminderProcessingWindow(input.now, input.timeZone);
   const limit = Math.min(500, Math.max(1, Math.trunc(input.limit ?? 100)));
-  const sendEmail = input.sendEmail ?? sendTransactionalEmail;
   const { refills, pills } = await dueReminderRows({ ...input, limit });
   let processedRefills = 0;
   let processedPills = 0;
+  let emailsQueued = 0;
   let emailsSent = 0;
   let emailsUnavailableOrFailed = 0;
   let emailsNotEnabled = 0;
   for (const row of refills) {
-    const results = await input.db.batch([
+    const statements: D1PreparedStatement[] = [
       input.db.prepare(`INSERT INTO notifications
         (profile_id,vendor_id,notification_type,severity,title,message,reference_type,reference_id,created_at)
         SELECT ?,?,'refill_due','info','Medicine refill reminder',?,'refill_reminder',?,?
@@ -216,42 +210,47 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
       input.db.prepare(`UPDATE refill_reminders SET last_notified_at=?,updated_at=? WHERE id=?
         AND (last_notified_at IS NULL OR date(last_notified_at)<date(?))`)
         .bind(`${row.localDate}T${row.localTime}:00`, `${row.localDate}T${row.localTime}:00`, row.id, row.localDate),
-    ]);
+    ];
+    if (row.emailEnabled) {
+      statements.push(prepareTransactionalEmailEnqueueStatement(input.db, {
+        profileId: row.profileId,
+        eventType: "refill_due",
+        payload: { medicineName: row.medicineName, dueDate: row.dueDate },
+        dedupeKey: `refill_due:${row.id}:${row.localDate}`,
+        whenPreviousStatementChanged: true,
+      }));
+    }
+    const results = await input.db.batch(statements);
     if (!Number(results[1]?.meta.changes ?? 0)) continue;
     processedRefills++;
     if (!row.emailEnabled) { emailsNotEnabled++; continue; }
-    const email = await sendEmail(row.email, `URMED refill reminder: ${row.medicineName}`,
-      `<h2>Refill reminder</h2><p>${html(row.medicineName)} is due for refill on ${html(row.dueDate)}.</p><p>Open URMED to review stock, current price and prescription requirements before ordering.</p>`);
-    if (email.sent) emailsSent++; else emailsUnavailableOrFailed++;
+    emailsQueued++;
   }
   for (const row of pills) {
+    const statements: D1PreparedStatement[] = [];
     if (row.inAppEnabled) {
-      const inserted = await input.db.prepare(`INSERT INTO notifications
+      statements.push(input.db.prepare(`INSERT INTO notifications
         (profile_id,notification_type,severity,title,message,reference_type,reference_id,created_at)
         SELECT ?,'pill_due','info','Medicine reminder',?,'pill_reminder',?,?
         WHERE NOT EXISTS (SELECT 1 FROM notifications WHERE profile_id=? AND reference_type='pill_reminder'
           AND reference_id=? AND date(created_at)=date(?))`)
         .bind(row.profileId, `${row.medicineName} at ${row.reminderTime}. ${row.dosageInstructions}`.trim(),
-          row.id, `${row.localDate}T${row.localTime}:00`, row.profileId, row.id, row.localDate).run();
-      if (!Number(inserted.meta.changes ?? 0)) continue;
+          row.id, `${row.localDate}T${row.localTime}:00`, row.profileId, row.id, row.localDate));
     }
+    if (row.emailEnabled) {
+      statements.push(prepareTransactionalEmailEnqueueStatement(input.db, {
+        profileId: row.profileId,
+        eventType: "pill_due",
+        payload: { medicineName: row.medicineName, reminderTime: row.reminderTime, dosageInstructions: row.dosageInstructions },
+        dedupeKey: `pill_due:${row.id}:${row.localDate}`,
+        whenPreviousStatementChanged: true,
+      }));
+    }
+    const results = statements.length ? await input.db.batch(statements) : [];
+    if (!results.some((result) => Number(result?.meta.changes ?? 0) > 0)) continue;
     processedPills++;
     if (!row.emailEnabled) { emailsNotEnabled++; continue; }
-    const email = await sendEmail(row.email, `URMED medicine reminder: ${row.medicineName}`,
-      `<h2>Medicine reminder</h2><p>${html(row.medicineName)} at ${html(row.reminderTime)}.</p><p>${html(row.dosageInstructions)}</p>`);
-    if (email.sent) {
-      emailsSent++;
-      if (!row.inAppEnabled) {
-        await appendAuditEvent({
-          actorProfileId: row.profileId,
-          action: "reminder.email_sent",
-          entityType: "pill_reminder",
-          entityId: `${row.id}:${row.localDate}`,
-          after: { category: "reminder", channel: "email", localDate: row.localDate, timeZone: row.timeZone },
-          requestId: input.requestId ?? "",
-        }, input.db);
-      }
-    } else emailsUnavailableOrFailed++;
+    emailsQueued++;
   }
   const result: ReminderProcessingResult = {
     window,
@@ -260,7 +259,7 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
       pills: processedPills,
       total: processedRefills + processedPills,
     },
-    email: { sent: emailsSent, unavailableOrFailed: emailsUnavailableOrFailed, notEnabled: emailsNotEnabled },
+    email: { queued: emailsQueued, sent: emailsSent, unavailableOrFailed: emailsUnavailableOrFailed, notEnabled: emailsNotEnabled },
   };
   if (input.appendAudit !== false && result.processed.total > 0) {
     await appendAuditEvent({

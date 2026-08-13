@@ -34,6 +34,7 @@ import { VendorCompliance } from "./vendor-compliance";
 import { AdminRegistrationList } from "./admin-registration-list";
 import { AdminStoreMap } from "./admin-store-map";
 import { AdminOperationalReports } from "./admin-operational-reports";
+import { AdminEmailOutbox } from "./admin-email-outbox";
 import { ProcurementCenter } from "./procurement-center";
 import { RefillCenter } from "./refill-center";
 import { AdminOperationsCenter, CustomerSafetyCenter, VendorOperationsCenter } from "./operations-centers";
@@ -172,7 +173,7 @@ function AdminPortal({ section }: { section: AdminSection }) {
   if (section === "architecture") return <DatabaseArchitecture />;
   if (section === "registrations") return <div className="portal-stack"><AdminRegistrationList /><AdminStoreMap /><VendorCompliance /></div>;
   if (section === "categories") return <ProductMaster role="admin" />;
-  if (section === "accounts") return <AdminOperationsCenter mode="accounts" />;
+  if (section === "accounts") return <div className="portal-stack"><AdminOperationsCenter mode="accounts" /><AdminEmailOutbox /></div>;
   return <AdminOperationalReports />;
 }
 

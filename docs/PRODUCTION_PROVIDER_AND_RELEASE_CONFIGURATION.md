@@ -13,7 +13,7 @@ contains variable names and validation steps only—never provider credentials.
 | `APP_STAGE` | Runtime stage | Set to `production`; never set production to `integration` |
 | `SUPABASE_URL` | Supabase Auth project URL | Must match the intended environment |
 | `SUPABASE_ANON_KEY` | Public Supabase anonymous key | Browser-safe anon key only; never use the service-role key here |
-| `RESEND_API_KEY` | Transactional email provider credential | Verify sender domain and a real test delivery; durable retry/outbox is still P5-06 |
+| `RESEND_API_KEY` | Transactional email provider credential | Verify sender domain and a real test delivery; outbox retries remain provider/environment dependent |
 | `RESEND_FROM_EMAIL` | Verified sender identity | Must belong to the verified sending domain |
 | `RAZORPAY_KEY_ID` | Browser/server payment key ID | Use live or sandbox consistently with its matching secret |
 | `RAZORPAY_KEY_SECRET` | Razorpay API/signature secret | Secret binding only; validate order, capture lookup, refund and failure flows |
@@ -63,11 +63,13 @@ The verified Worker artifact must contain these independent UTC crons:
 - `*/5 * * * *` — expired stock-reservation recovery;
 - `*/15 * * * *` — due pill/refill processing using Asia/Kolkata rules;
 - `30 0 * * *` — daily vendor expiry/stock alerts (06:00 IST).
+- `7,17,27,37,47,57 * * * *` — transactional email outbox leasing and delivery retries.
 
 After deployment, verify one bounded run of each job from structured logs and
 confirm that retrying the same window creates no duplicate stock release,
-notification, or reminder. Provider email failures are visible in the run
-result but are not durable until P5-06 adds an outbox.
+notification, reminder, or email provider request. Outbox provider failures
+remain in retry/dead-letter state and are visible through the administrator
+email-outbox surface.
 
 ## D1/R2 release sequence
 

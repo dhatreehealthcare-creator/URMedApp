@@ -65,6 +65,9 @@ if (!wrangler.triggers?.crons?.includes("*/15 * * * *")) {
 if (!wrangler.triggers?.crons?.includes("30 0 * * *")) {
   throw new Error("dist/server/wrangler.json must schedule vendor inventory alerts daily");
 }
+if (!wrangler.triggers?.crons?.includes("7,17,27,37,47,57 * * * *")) {
+  throw new Error("dist/server/wrangler.json must schedule transactional email outbox processing");
+}
 NODE
 
 echo "Validated Sites artifact: Worker handlers, D1 migrations, R2, client assets, scheduled jobs, and hosting bindings are aligned."

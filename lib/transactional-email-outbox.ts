@@ -1,8 +1,9 @@
 import { prepareAuditEventStatement } from "./audit.ts";
 import { emailChannelEligibility, type NotificationCategory } from "./notification-preferences.ts";
 import { sendTransactionalEmail, type TransactionalEmailSendResult } from "./resend.ts";
+import { TRANSACTIONAL_EMAIL_OUTBOX_CRON } from "./scheduled-job-config.ts";
 
-export const TRANSACTIONAL_EMAIL_OUTBOX_CRON = "7,17,27,37,47,57 * * * *";
+export { TRANSACTIONAL_EMAIL_OUTBOX_CRON };
 export const EMAIL_OUTBOX_POLICY_VERSION = "URMED-EMAIL-OUTBOX-2026.1";
 
 const eventCategory = {

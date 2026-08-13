@@ -344,6 +344,13 @@
       "when": 1786581786911,
       "tag": "0048_cool_gertrude_yorkes",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1786585000000,
+      "tag": "0049_email_outbox_delete_guard",
+      "breakpoints": true
     }
   ]
 }
