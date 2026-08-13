@@ -41,6 +41,7 @@ import { AdminOperationsCenter, CustomerSafetyCenter, VendorOperationsCenter } f
 import { authenticatedFetch } from "./marketplace-client";
 import { ProductMaster } from "./product-master";
 import { CustomerOrderHistory } from "./customer-order-history";
+import { AccountingStatements } from "./accounting-statements";
 import type { CustomerReorderRequest } from "../lib/customer-order-history";
 
 type PortalRole = "vendor" | "customer" | "admin";
@@ -59,7 +60,7 @@ const portalNavigation = {
   ],
   admin: [
     ["overview", "Admin overview", LayoutDashboard], ["architecture", "Database foundation", Database], ["registrations", "Store registrations", Store], ["categories", "Product categories", Pill],
-    ["accounts", "Ledgers & expenses", Landmark], ["reports", "Operational reports", FileText],
+    ["accounts", "Ledgers & statements", Landmark], ["reports", "Operational reports", FileText],
   ],
 } as const;
 
@@ -68,7 +69,7 @@ function VendorOverview({ setSection }: { setSection: (section: VendorSection) =
 }
 
 function ReportsView() {
-  return <VendorOperationsCenter />;
+  return <div className="portal-stack"><AccountingStatements vendor /><VendorOperationsCenter /></div>;
 }
 
 function CustomerPortal({ section }: { section: CustomerSection }) {
@@ -173,7 +174,7 @@ function AdminPortal({ section }: { section: AdminSection }) {
   if (section === "architecture") return <DatabaseArchitecture />;
   if (section === "registrations") return <div className="portal-stack"><AdminRegistrationList /><AdminStoreMap /><VendorCompliance /></div>;
   if (section === "categories") return <ProductMaster role="admin" />;
-  if (section === "accounts") return <div className="portal-stack"><AdminOperationsCenter mode="accounts" /><AdminEmailOutbox /></div>;
+  if (section === "accounts") return <div className="portal-stack"><AccountingStatements /><AdminOperationsCenter mode="accounts" /><AdminEmailOutbox /></div>;
   return <AdminOperationalReports />;
 }
 

@@ -4,6 +4,7 @@ import { errorResponse, requireLocalProfile } from "../../../../lib/auth-server"
 import { requireVendorPermission } from "../../../../lib/vendor-access";
 import { releaseExpiredReservations } from "../../../../lib/inventory-reservations";
 import { completeSupplierReturn, listReturnablePurchases, PurchaseLifecycleError } from "../../../../lib/supplier-returns";
+import { completeSalesReturn, SalesReturnError } from "../../../../lib/sales-returns";
 
 const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
@@ -76,37 +77,21 @@ export async function POST(request: Request) {
       return Response.json({ recorded: true, withinRange, action: actionText }, { headers: privateResponseHeaders });
     }
     if (action === "return") {
-      const inventoryId=Number(body.inventoryId), sourceId=Number(body.sourceId), quantity=Number(body.quantity);
-      const sourceType=String(body.sourceType ?? "online"), condition=String(body.condition ?? "sealed"), reason=String(body.reason ?? "").trim().slice(0,300);
-      if (!Number.isInteger(inventoryId)||!Number.isInteger(sourceId)||!Number.isInteger(quantity)||quantity<1||!reason||!["online","offline"].includes(sourceType)||!["sealed","damaged","expired"].includes(condition)) return Response.json({error:"Return details are invalid"},{status:400});
-      const item = await db.prepare(`SELECT i.id,i.quantity,i.expiry_date AS expiryDate, COALESCE((SELECT unit_price_paise FROM order_items WHERE inventory_id=i.id AND order_id=? LIMIT 1),(SELECT unit_price_paise FROM offline_sale_items WHERE inventory_id=i.id AND offline_sale_id=? LIMIT 1),i.sale_price_paise) AS unitPrice FROM pharmacy_inventory i WHERE i.id=? AND i.vendor_id=?`).bind(sourceId,sourceId,inventoryId,vendorId).first<{id:number;quantity:number;expiryDate:string;unitPrice:number}>();
-      if(!item) return Response.json({error:"Return inventory batch not found"},{status:404});
-      const sourceCount = await db.prepare(sourceType === "online" ? `SELECT COALESCE(SUM(quantity),0) AS qty FROM order_items WHERE order_id=? AND inventory_id=?` : `SELECT COALESCE(SUM(quantity),0) AS qty FROM offline_sale_items WHERE offline_sale_id=? AND inventory_id=?`).bind(sourceId,inventoryId).first<{qty:number}>();
-      const prior = await db.prepare(`SELECT COALESCE(SUM(ri.quantity),0) AS qty FROM sales_return_items ri JOIN sales_returns r ON r.id=ri.sales_return_id WHERE r.vendor_id=? AND r.source_type=? AND r.source_id=? AND ri.inventory_id=?`).bind(vendorId,sourceType,sourceId,inventoryId).first<{qty:number}>();
-      if(quantity > Number(sourceCount?.qty ?? 0)-Number(prior?.qty ?? 0)) return Response.json({error:"Return quantity exceeds the unreturned sold quantity"},{status:409});
-      const saleable = condition === "sealed" && item.expiryDate >= new Date().toISOString().slice(0,10);
-      const nonce=`${Date.now()}-${crypto.randomUUID().slice(0,8)}`, returnNumber=`RET-${nonce}`, creditNote=`CN-${nonce}`;
-      const refund=quantity*item.unitPrice;
       try {
-        await db.batch([
-          db.prepare(`INSERT INTO sales_returns (return_number,vendor_id,source_type,source_id,reason,credit_note_number,refund_paise,status,created_by_profile_id) VALUES (?,?,?,?,?,?,?,'completed',?)`).bind(returnNumber,vendorId,sourceType,sourceId,reason,creditNote,refund,profile.id),
-          db.prepare(`INSERT INTO sales_return_items (sales_return_id,inventory_id,quantity,condition,disposition,amount_paise)
-            SELECT id,?,?,?,?,? FROM sales_returns WHERE return_number=?`).bind(inventoryId,quantity,condition,saleable?"restocked":"quarantined",refund,returnNumber),
-          db.prepare(`UPDATE pharmacy_inventory SET quantity=quantity+?, quarantine_status=CASE WHEN ? THEN quarantine_status ELSE 'returned_quarantine' END, updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=?`).bind(saleable?quantity:0,saleable?1:0,inventoryId,vendorId),
-          db.prepare(`INSERT INTO stock_ledger (vendor_id,inventory_id,movement_type,quantity_delta,balance_after,reference_type,reference_id,reason,actor_profile_id)
-            SELECT i.vendor_id,i.id,?, ?,i.quantity,'sales_return',r.id,?,? FROM pharmacy_inventory i JOIN sales_returns r ON r.return_number=? WHERE i.id=? AND i.vendor_id=?`).bind(saleable?"sale_return_restock":"sale_return_quarantine",saleable?quantity:0,reason,profile.id,returnNumber,inventoryId,vendorId),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
-            SELECT vendor_id,'SALES_RETURNS',date('now'),'Credit note '||credit_note_number,refund_paise,0,'sales_return',id,? FROM sales_returns WHERE return_number=?`).bind(profile.id,returnNumber),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
-            SELECT vendor_id,'CUSTOMER_REFUNDS',date('now'),'Refund '||credit_note_number,0,refund_paise,'sales_return',id,? FROM sales_returns WHERE return_number=?`).bind(profile.id,returnNumber),
-        ]);
+        const result = await completeSalesReturn({
+          db, vendorId, actorProfileId: profile.id,
+          sourceType: String(body.sourceType ?? "online") as "online" | "offline",
+          sourceId: Number(body.sourceId), inventoryId: Number(body.inventoryId), quantity: Number(body.quantity),
+          condition: String(body.condition ?? "sealed") as "sealed" | "damaged" | "expired",
+          reason: String(body.reason ?? ""), idempotencyKey: String(body.idempotencyKey ?? ""),
+          refundMethod: String(body.refundMethod ?? "credit") as "credit" | "cash" | "upi" | "card" | "razorpay",
+          refundReference: String(body.refundReference ?? ""), requestId: request.headers.get("cf-ray") ?? "",
+        });
+        return Response.json(result, { status: result.duplicate ? 200 : 201, headers: privateResponseHeaders });
       } catch (error) {
-        if (/sales_return_quantity_invalid/i.test(error instanceof Error ? error.message : "")) return Response.json({error:"Return quantity changed or exceeds the unreturned sold quantity"},{status:409});
+        if (error instanceof SalesReturnError) return Response.json({ error: error.message }, { status: error.status, headers: privateResponseHeaders });
         throw error;
       }
-      const returnRow=await db.prepare(`SELECT id FROM sales_returns WHERE return_number=?`).bind(returnNumber).first<{id:number}>();
-      await appendAuditEvent({vendorId,actorProfileId:profile.id,action:"sales_return.completed",entityType:"sales_return",entityId:returnRow!.id,after:{sourceType,sourceId,inventoryId,quantity,refund,disposition:saleable?"restocked":"quarantined"},requestId:request.headers.get("cf-ray")??""});
-      return Response.json({created:true,returnNumber,creditNote,refundPaise:refund,disposition:saleable?"restocked":"quarantined"},{status:201,headers:privateResponseHeaders});
     }
     if (action === "supplier_return") {
       try {

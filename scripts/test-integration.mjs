@@ -301,6 +301,26 @@ try {
     await integrationDatabase.prepare("UPDATE test_accounts SET email_confirmed=?,phone_confirmed=? WHERE email=?")
       .bind(emailConfirmed, phoneConfirmed, normalizedEmail).run();
   };
+  globalThis.__URMED_INTEGRATION_ENABLE_EMAIL__ = async (email) => {
+    const normalizedEmail = String(email ?? "").trim().toLowerCase();
+    const profile = await integrationDatabase.prepare("SELECT id FROM account_profiles WHERE email=? AND status='active' LIMIT 1")
+      .bind(normalizedEmail).first();
+    if (!profile) throw new Error(`The integration email profile ${normalizedEmail} does not exist`);
+    const result = await integrationDatabase.prepare(`UPDATE notification_preferences
+      SET email_enabled=1,version=version+1,updated_at=CURRENT_TIMESTAMP
+      WHERE profile_id=? AND category IN ('transactional','safety','reminder')`).bind(profile.id).run();
+    if (Number(result.meta.changes ?? 0) < 3) throw new Error(`Email preferences are incomplete for ${normalizedEmail}`);
+    return { profileId: profile.id };
+  };
+  globalThis.__URMED_INTEGRATION_EMAIL_OUTBOX_INSPECT__ = async () => {
+    const rows = await integrationDatabase.prepare(`SELECT id,status,attempt_count AS attemptCount,
+      provider_message_id AS providerMessageId,dedupe_key AS dedupeKey FROM transactional_email_outbox ORDER BY id`).all();
+    let deleteGuard = false;
+    try {
+      await integrationDatabase.prepare("DELETE FROM transactional_email_outbox WHERE id=?").bind(rows.results[0]?.id ?? -1).run();
+    } catch { deleteGuard = true; }
+    return { rows: rows.results, deleteGuard };
+  };
   globalThis.__URMED_INTEGRATION_EXPIRE_ORDER__ = async (orderId) => {
     if (!Number.isInteger(orderId) || orderId < 1) throw new Error("Integration order ID is invalid");
     const expiresAt = "2000-01-01T00:00:00.000Z";
@@ -313,7 +333,7 @@ try {
   };
   globalThis.__URMED_INTEGRATION_ORDER_EVIDENCE__ = async (orderId) => {
     if (!Number.isInteger(orderId) || orderId < 1) throw new Error("Integration order ID is invalid");
-    const [order, inventory, stockLedger, accountingLedger, deliveryEvents, auditEvents] = await Promise.all([
+    const [order, inventory, stockLedger, accountingLedger, deliveryEvents, auditEvents, codCollection] = await Promise.all([
       integrationDatabase.prepare(`SELECT order_status AS orderStatus,delivery_status AS deliveryStatus,
         inventory_status AS inventoryStatus,payment_status AS paymentStatus FROM orders WHERE id=?`).bind(orderId).first(),
       integrationDatabase.prepare(`SELECT inventory.id,inventory.quantity,
@@ -327,6 +347,9 @@ try {
       integrationDatabase.prepare("SELECT COUNT(*) AS count FROM delivery_events WHERE order_id=?").bind(orderId).first(),
       integrationDatabase.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE entity_type='order' AND entity_id=?")
         .bind(String(orderId)).first(),
+      integrationDatabase.prepare(`SELECT amount_paise AS amountPaise,tender_mode AS tenderMode,
+        receipt_reference AS receiptReference,idempotency_key AS idempotencyKey,custody_status AS custodyStatus
+        FROM cod_collection_evidence WHERE order_id=?`).bind(orderId).first(),
     ]);
     if (!order) throw new Error(`Integration order ${orderId} does not exist`);
     return {
@@ -336,6 +359,7 @@ try {
       accountingLedgerCount: Number(accountingLedger?.count ?? 0),
       deliveryEventCount: Number(deliveryEvents?.count ?? 0),
       auditEventCount: Number(auditEvents?.count ?? 0),
+      codCollection: codCollection ?? null,
     };
   };
   globalThis.__URMED_INTEGRATION_DELIVERY_EVIDENCE__ = async (email = "delivery@urmed.test") => {
@@ -569,6 +593,8 @@ try {
   delete globalThis.__URMED_INTEGRATION_INSPECT__;
   delete globalThis.__URMED_INTEGRATION_SCHEDULED__;
   delete globalThis.__URMED_INTEGRATION_SET_TEST_CLAIMS__;
+  delete globalThis.__URMED_INTEGRATION_ENABLE_EMAIL__;
+  delete globalThis.__URMED_INTEGRATION_EMAIL_OUTBOX_INSPECT__;
   delete globalThis.__URMED_INTEGRATION_EXPIRE_ORDER__;
   delete globalThis.__URMED_INTEGRATION_ORDER_EVIDENCE__;
   delete globalThis.__URMED_INTEGRATION_DELIVERY_EVIDENCE__;

@@ -5,6 +5,7 @@ import { runReservationRecovery } from "../lib/reservation-recovery.ts";
 import { processDueReminders, reminderProcessingWindow } from "../lib/reminder-processing.ts";
 import { REMINDER_PROCESSING_CRON, RESERVATION_RECOVERY_CRON, TRANSACTIONAL_EMAIL_OUTBOX_CRON, VENDOR_INVENTORY_ALERT_CRON } from "../lib/scheduled-job-config.ts";
 import { generateVendorInventoryAlerts } from "../lib/vendor-inventory-alerts.ts";
+import { generateVendorOrderSlaNotifications } from "../lib/vendor-order-notifications.ts";
 import { processTransactionalEmailOutbox } from "../lib/transactional-email-outbox.ts";
 import { withSecurityHeaders } from "../lib/security-headers.ts";
 
@@ -115,11 +116,13 @@ const worker = {
       ctx.waitUntil(generateVendorInventoryAlerts({
         db: env.DB,
         processingDate,
-      }).then((result) => {
+      }).then(async (result) => {
+        const sla = await generateVendorOrderSlaNotifications({ db: env.DB, now: new Date(controller.scheduledTime).toISOString() });
         console.info("Scheduled vendor inventory alert processing completed", {
           cron: controller.cron,
           processingDate: result.processingDate,
           generated: result.generated,
+          slaGenerated: sla.generated,
         });
       }).catch((error) => {
         console.error("Scheduled vendor inventory alert processing failed", error);

@@ -10,6 +10,7 @@ import { prepareOnlineOrderReservation, releaseExpiredReservations, reservationE
 import { normalizeIndianMobile } from "../../../lib/identity-verification";
 import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
 import { requireVendorPermission } from "../../../lib/vendor-access";
+import { prepareVendorNewOrderNotificationStatement } from "../../../lib/vendor-order-notifications";
 
 const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
@@ -320,13 +321,13 @@ export async function POST(request: Request) {
         SELECT id, ?, ?, ? FROM orders WHERE order_number = ?`)
         .bind(prescriptionStatus === "pending_review" ? "pharmacist_review" : "placed", profile.id,
           prescriptionStatus === "pending_review" ? "Prescription received and awaiting pharmacist review" : "Order received by URMED", number),
+      prepareVendorNewOrderNotificationStatement(db, { orderNumber: number, orderId: 0, vendorId }),
     ];
     statements.push(prepareTransactionalEmailEnqueueStatement(db, {
       profileId: profile.id,
       eventType: "order_placed",
       payload: { orderNumber: number, totalPaise, taxPaise },
       dedupeKey: `order_placed:${number}`,
-      whenPreviousStatementChanged: true,
     }));
     if (refillReminderId) {
       statements.push(db.prepare(`UPDATE refill_reminders SET status = 'completed', repeat_order_id =

@@ -185,11 +185,11 @@ VALUES
 
 INSERT INTO pharmacy_inventory
   (id, vendor_id, product_id, batch_number, expiry_date, manufacturing_date, dosage,
-   purchase_price_paise, sale_price_paise, quantity, reserved_quantity, gst_percent,
+   purchase_price_paise, sale_price_paise, mrp_paise, quantity, reserved_quantity, gst_percent,
    quarantine_status, cold_chain_status, active)
 SELECT bad.id, bad.id, source.product_id, 'P009-NONSELLABLE-' || bad.id,
   date('now', '+1 year'), date('now', '-1 year'), 'P009 security fixture',
-  1000, 1200, 10, 0, 5, 'available', 'not_applicable', 1
+  1000, 1200, 1500, 10, 0, 5, 'available', 'not_applicable', 1
 FROM vendors bad
 CROSS JOIN (SELECT product_id FROM pharmacy_inventory WHERE batch_number = 'TEST-URMED-001') source
 WHERE bad.id IN (900020, 900021, 900022, 900023);
@@ -270,6 +270,21 @@ VALUES
   (900032, 'P304 Counter Second OTC', 'p304 counter second otc',
    'Counter second-line fixture', 'P304 Manufacturer', 0, 0, '3004', '20 tablets', 'p304_integration_fixture', 'approved', 'OTC', 1);
 
+INSERT INTO products
+  (legacy_id, name, normalized_name, composition, manufacturer, prescription_required,
+   gst_percent, hsn_code, packaging, source, governance_status, drug_schedule, active)
+VALUES
+  (900050, 'P308 Fulfilment Return Fixture', 'p308 fulfilment return fixture',
+   'Fulfilment and returns integration fixture', 'P308 Manufacturer', 0, 5, '3004', '10 tablets',
+   'p308_integration_fixture', 'approved', 'OTC', 1);
+INSERT INTO products
+  (legacy_id, name, normalized_name, composition, manufacturer, prescription_required,
+   gst_percent, hsn_code, packaging, source, governance_status, drug_schedule, active)
+VALUES
+  (900060, 'P209 Pricing Governance Fixture', 'p209 pricing governance fixture',
+   'Pricing/UOM integration fixture', 'P209 Manufacturer', 0, 5, '3004', '10 tablets',
+   'p209_integration_fixture', 'approved', 'OTC', 1);
+
 INSERT INTO pharmacy_inventory
   (id, vendor_id, product_id, batch_number, expiry_date, manufacturing_date, dosage,
    purchase_price_paise, sale_price_paise, mrp_paise, quantity, reserved_quantity,
@@ -318,6 +333,26 @@ SELECT 900033, vendor.id, product.id, 'P304-OTC-SECOND', date('now', '+550 day')
   date('now', '-100 day'), 'Counter second-line integration', 300, 500, 600, 10, 0,
   0, 2, 'available', 'not_applicable', 1
 FROM vendors vendor JOIN products product ON product.legacy_id=900032
+WHERE vendor.profile_id=(SELECT id FROM account_profiles WHERE auth_user_id='test:vendor');
+
+INSERT INTO pharmacy_inventory
+  (id, vendor_id, product_id, batch_number, expiry_date, manufacturing_date, dosage,
+   purchase_price_paise, sale_price_paise, mrp_paise, quantity, reserved_quantity,
+   gst_percent, reorder_level, quarantine_status, cold_chain_status, active)
+SELECT 900050, vendor.id, product.id, 'P308-FULFILMENT-BATCH', date('now', '+500 day'),
+  date('now', '-100 day'), 'Fulfilment integration', 700, 1000, 1200, 20, 0,
+  5, 2, 'available', 'not_applicable', 1
+FROM vendors vendor JOIN products product ON product.legacy_id=900050
+WHERE vendor.profile_id=(SELECT id FROM account_profiles WHERE auth_user_id='test:vendor');
+
+INSERT INTO pharmacy_inventory
+  (id, vendor_id, product_id, batch_number, expiry_date, manufacturing_date, dosage,
+   purchase_price_paise, sale_price_paise, mrp_paise, quantity, reserved_quantity,
+   gst_percent, reorder_level, quarantine_status, cold_chain_status, active)
+SELECT 900060, vendor.id, product.id, 'P209-PRICE-BATCH', date('now', '+500 day'),
+  date('now', '-100 day'), 'Pricing integration', 700, 1000, 1200, 25, 0,
+  5, 2, 'available', 'not_applicable', 1
+FROM vendors vendor JOIN products product ON product.legacy_id=900060
 WHERE vendor.profile_id=(SELECT id FROM account_profiles WHERE auth_user_id='test:vendor');
 
 INSERT INTO pharmacy_inventory

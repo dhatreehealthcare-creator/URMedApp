@@ -93,6 +93,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       && ["paid", "refund_pending"].includes(order.paymentStatus)) {
       return privateJson({ error: "Use the verified refund action to cancel a paid online order" }, { status: 409 });
     }
+    if (status === "delivered" && order.paymentMethod === "cod" && order.paymentStatus !== "paid") {
+      return privateJson({ error: "Record and verify COD collection evidence before marking this order delivered" }, { status: 409 });
+    }
+    if (status === "delivered" && order.paymentMethod === "cod") {
+      const collection = await db.prepare("SELECT id FROM cod_collection_evidence WHERE order_id=? AND collection_status='collected' LIMIT 1").bind(orderId).first();
+      if (!collection) return privateJson({ error: "Record and verify COD collection evidence before marking this order delivered" }, { status: 409 });
+    }
     const permitted = profile.role === "customer"
       ? canCustomerCancelOrder(order) ? ["cancelled"] : []
       : nextDeliveryStatuses({
@@ -162,10 +169,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         WHERE id = ? AND delivery_status = ? AND order_status NOT IN ('completed', 'cancelled')`)
         .bind(status, profile.id, eventNote, latitude, longitude, orderId, order.deliveryStatus),
       db.prepare(`UPDATE orders SET delivery_status = ?, order_status = ?,
-        payment_status = CASE WHEN ? = 'delivered' AND payment_method = 'cod' THEN 'paid' ELSE payment_status END,
         updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND delivery_status = ? AND order_status NOT IN ('completed', 'cancelled')`)
-        .bind(status, orderStatusForDeliveryStatus(status), status, orderId, order.deliveryStatus),
+        .bind(status, orderStatusForDeliveryStatus(status), orderId, order.deliveryStatus),
     );
     if (profile.role === "delivery") {
       statements.push(db.prepare(`UPDATE delivery_assignments SET status=?,
@@ -182,7 +188,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         db.prepare(`UPDATE orders SET invoice_id=(SELECT id FROM tax_invoices WHERE source_type='online_order' AND source_id=orders.id ORDER BY id DESC LIMIT 1) WHERE id=? AND delivery_status='delivered'`).bind(orderId),
         db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
           SELECT vendor_id,'CASH_BANK',date('now'),'Receipt for '||order_number,total_paise,0,'online_order',id,? FROM orders o
-          WHERE id=? AND delivery_status='delivered' AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.reference_type='online_order' AND l.reference_id=o.id AND l.account_code='CASH_BANK')`).bind(profile.id,orderId),
+          WHERE id=? AND delivery_status='delivered' AND (payment_method<>'cod' OR EXISTS (SELECT 1 FROM cod_collection_evidence c WHERE c.order_id=o.id AND c.collection_status='collected')) AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.reference_type='online_order' AND l.reference_id=o.id AND l.account_code='CASH_BANK')`).bind(profile.id,orderId),
         db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
           SELECT vendor_id,'SALES',date('now'),'Sale for '||order_number,0,subtotal_paise,'online_order',id,? FROM orders o
           WHERE id=? AND delivery_status='delivered' AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.reference_type='online_order' AND l.reference_id=o.id AND l.account_code='SALES')`).bind(profile.id,orderId),
@@ -224,7 +230,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       eventType: "order_status_changed",
       payload: { orderNumber: order.orderNumber, status: workflowStatusLabels[status], refillCreated: status === "delivered" },
       dedupeKey: `order_status:${orderId}:${status}`,
-      whenPreviousStatementChanged: true,
     }));
     const results = await db.batch(statements);
     if (!results[eventIndex]?.meta.changes) return privateJson({ error: "The order changed. Refresh before taking the next action." }, { status: 409 });

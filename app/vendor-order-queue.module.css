@@ -520,3 +520,4 @@
   .pagination { align-items: stretch; flex-direction: column; }
   .pagination div button { flex: 1; }
 }
+.warning { color: #a44700; font-weight: 700; }

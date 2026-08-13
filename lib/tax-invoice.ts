@@ -102,6 +102,8 @@ export function prepareOnlineTaxInvoiceStatement(
     FROM orders source JOIN vendors vendor ON vendor.id=source.vendor_id
     JOIN order_items item ON item.order_id=source.id
     WHERE source.id=? AND source.delivery_status='delivered' AND source.payment_status='paid'
+      AND (source.payment_method <> 'cod' OR EXISTS (SELECT 1 FROM cod_collection_evidence collection
+        WHERE collection.order_id=source.id AND collection.collection_status='collected'))
       AND NOT EXISTS (SELECT 1 FROM tax_invoices invoice WHERE invoice.source_type='online_order' AND invoice.source_id=source.id)
     GROUP BY source.id,source.order_number,source.vendor_id,vendor.business_name,vendor.address,vendor.email,
       vendor.gst_number,source.customer_name,source.delivery_address,source.place_of_supply_state_code,

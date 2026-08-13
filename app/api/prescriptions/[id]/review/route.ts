@@ -111,7 +111,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       payload: { prescriptionNumber: prescription.prescriptionNumber,
         decision: decision as "approved" | "rejected" | "clarification_required" },
       dedupeKey: `prescription_reviewed:${prescriptionId}:${decision}`,
-      whenPreviousStatementChanged: true,
     }));
     try {
       await db.batch(statements);

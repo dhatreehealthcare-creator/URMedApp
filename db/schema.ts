@@ -315,6 +315,61 @@ export const pharmacyInventory = sqliteTable("pharmacy_inventory", {
   index("pharmacy_inventory_vendor_idx").on(table.vendorId),
 ]);
 
+export const inventoryPriceHistory = sqliteTable("inventory_price_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  inventoryId: integer("inventory_id").notNull().references(() => pharmacyInventory.id),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  productId: integer("product_id").notNull().references(() => products.id),
+  purchasePricePaise: integer("purchase_price_paise").notNull(),
+  salePricePaise: integer("sale_price_paise").notNull(),
+  mrpPaise: integer("mrp_paise").notNull(),
+  gstPercent: integer("gst_percent").notNull(),
+  effectiveFrom: text("effective_from").notNull(),
+  effectiveUntil: text("effective_until"),
+  source: text("source").notNull().default("system"),
+  reason: text("reason").notNull().default(""),
+  createdByProfileId: integer("created_by_profile_id").references(() => accountProfiles.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("inventory_price_history_inventory_effective_idx").on(table.inventoryId, table.effectiveFrom),
+  index("inventory_price_history_vendor_product_idx").on(table.vendorId, table.productId, table.effectiveFrom),
+]);
+
+export const productPackConversions = sqliteTable("product_pack_conversions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id),
+  presentationUom: text("presentation_uom").notNull(),
+  baseUom: text("base_uom").notNull().default("unit"),
+  baseUnitsPerPresentation: integer("base_units_per_presentation").notNull(),
+  governanceStatus: text("governance_status", { enum: ["pending", "approved", "rejected", "inactive"] }).notNull().default("pending"),
+  submittedVendorId: integer("submitted_vendor_id").references(() => vendors.id),
+  reviewedByProfileId: integer("reviewed_by_profile_id").references(() => accountProfiles.id),
+  reviewReason: text("review_reason").notNull().default(""),
+  effectiveFrom: text("effective_from").notNull(),
+  effectiveUntil: text("effective_until"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("product_pack_conversions_product_uom_uidx").on(table.productId, table.presentationUom),
+  index("product_pack_conversions_governance_idx").on(table.productId, table.governanceStatus, table.effectiveFrom),
+]);
+
+export const productBarcodes = sqliteTable("product_barcodes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id),
+  code: text("code").notNull(),
+  symbology: text("symbology").notNull().default("GTIN-13"),
+  status: text("status", { enum: ["pending", "approved", "rejected", "inactive"] }).notNull().default("pending"),
+  submittedVendorId: integer("submitted_vendor_id").references(() => vendors.id),
+  reviewedByProfileId: integer("reviewed_by_profile_id").references(() => accountProfiles.id),
+  reviewReason: text("review_reason").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("product_barcodes_code_uidx").on(table.code),
+  index("product_barcodes_product_status_idx").on(table.productId, table.status),
+]);
+
 export const inventoryAdjustmentReasonCodes = sqliteTable("inventory_adjustment_reason_codes", {
   code: text("code").primaryKey(),
   label: text("label").notNull(),
@@ -439,6 +494,34 @@ export const orders = sqliteTable("orders", {
   index("orders_customer_idx").on(table.customerProfileId, table.createdAt),
   index("orders_vendor_idx").on(table.vendorId, table.createdAt),
   index("orders_razorpay_idx").on(table.razorpayOrderId),
+]);
+
+export const codCollectionEvidence = sqliteTable("cod_collection_evidence", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orderId: integer("order_id").notNull().references(() => orders.id),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  amountPaise: integer("amount_paise").notNull(),
+  tenderMode: text("tender_mode", { enum: ["cash", "upi", "card", "bank_transfer"] }).notNull(),
+  receiptReference: text("receipt_reference").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  collectorProfileId: integer("collector_profile_id").notNull().references(() => accountProfiles.id),
+  collectionStatus: text("collection_status", { enum: ["collected", "voided"] }).notNull().default("collected"),
+  custodyStatus: text("custody_status", { enum: ["on_hand", "deposited", "reconciled"] }).notNull().default("on_hand"),
+  collectedAt: text("collected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  depositReference: text("deposit_reference").notNull().default(""),
+  depositedAt: text("deposited_at"),
+  depositedByProfileId: integer("deposited_by_profile_id").references(() => accountProfiles.id),
+  reconciliationReference: text("reconciliation_reference").notNull().default(""),
+  reconciledAt: text("reconciled_at"),
+  reconciledByProfileId: integer("reconciled_by_profile_id").references(() => accountProfiles.id),
+  notes: text("notes").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("cod_collection_order_uidx").on(table.orderId),
+  uniqueIndex("cod_collection_idempotency_uidx").on(table.idempotencyKey),
+  index("cod_collection_vendor_status_idx").on(table.vendorId, table.custodyStatus, table.collectedAt),
+  check("cod_collection_amount_check", sql`${table.amountPaise} > 0 AND length(trim(${table.receiptReference})) BETWEEN 3 AND 120 AND length(trim(${table.idempotencyKey})) BETWEEN 8 AND 160`),
 ]);
 
 export const orderItems = sqliteTable("order_items", {
@@ -963,10 +1046,22 @@ export const salesReturns = sqliteTable("sales_returns", {
   reason: text("reason").notNull(),
   creditNoteNumber: text("credit_note_number").notNull(),
   refundPaise: integer("refund_paise").notNull(),
+  discountPaise: integer("discount_paise").notNull().default(0),
+  taxPaise: integer("tax_paise").notNull().default(0),
+  deliveryFeePaise: integer("delivery_fee_paise").notNull().default(0),
+  refundMethod: text("refund_method").notNull().default("credit"),
+  refundStatus: text("refund_status").notNull().default("recorded"),
+  refundReference: text("refund_reference").notNull().default(""),
+  providerRefundId: text("provider_refund_id"),
+  idempotencyKey: text("idempotency_key").notNull().default(""),
   status: text("status").notNull().default("completed"),
   createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [uniqueIndex("sales_returns_number_uidx").on(table.returnNumber)]);
+}, (table) => [
+  uniqueIndex("sales_returns_number_uidx").on(table.returnNumber),
+  uniqueIndex("sales_returns_vendor_idempotency_uidx").on(table.vendorId, table.idempotencyKey).where(sql`${table.idempotencyKey} <> ''`),
+  index("sales_returns_source_idx").on(table.vendorId, table.sourceType, table.sourceId),
+]);
 
 export const salesReturnItems = sqliteTable("sales_return_items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -976,7 +1071,31 @@ export const salesReturnItems = sqliteTable("sales_return_items", {
   condition: text("condition").notNull(),
   disposition: text("disposition").notNull(),
   amountPaise: integer("amount_paise").notNull(),
+  sourceItemId: integer("source_item_id").notNull().default(0),
+  grossPaise: integer("gross_paise").notNull().default(0),
+  discountPaise: integer("discount_paise").notNull().default(0),
+  taxablePaise: integer("taxable_paise").notNull().default(0),
+  taxPaise: integer("tax_paise").notNull().default(0),
+  cgstPaise: integer("cgst_paise").notNull().default(0),
+  sgstPaise: integer("sgst_paise").notNull().default(0),
+  igstPaise: integer("igst_paise").notNull().default(0),
 });
+
+export const returnQuarantineHolds = sqliteTable("return_quarantine_holds", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  salesReturnItemId: integer("sales_return_item_id").notNull().references(() => salesReturnItems.id),
+  inventoryId: integer("inventory_id").notNull().references(() => pharmacyInventory.id),
+  quantity: integer("quantity").notNull(),
+  condition: text("condition").notNull(),
+  status: text("status").notNull().default("held"),
+  reason: text("reason").notNull(),
+  createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("return_quarantine_holds_item_uidx").on(table.salesReturnItemId),
+  index("return_quarantine_holds_vendor_idx").on(table.vendorId, table.status, table.createdAt),
+]);
 
 export const paymentRefunds = sqliteTable("payment_refunds", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -1098,6 +1217,73 @@ export const ledgerEntries = sqliteTable("ledger_entries", {
   createdByProfileId: integer("created_by_profile_id").references(() => accountProfiles.id),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("ledger_entries_vendor_date_idx").on(table.vendorId, table.entryDate)]);
+
+/** Governed account master used by statements; ledger_entries remains the immutable posting source. */
+export const chartAccounts = sqliteTable("chart_accounts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  accountCode: text("account_code").notNull(),
+  name: text("name").notNull(),
+  accountType: text("account_type", { enum: ["asset", "liability", "equity", "income", "expense"] }).notNull(),
+  normalBalance: text("normal_balance", { enum: ["debit", "credit"] }).notNull(),
+  parentCode: text("parent_code"),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  system: integer("system", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("chart_accounts_code_uidx").on(table.accountCode),
+  index("chart_accounts_type_idx").on(table.accountType, table.active),
+]);
+
+export const accountingOpeningBalances = sqliteTable("accounting_opening_balances", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  accountCode: text("account_code").notNull().references(() => chartAccounts.accountCode),
+  asOfDate: text("as_of_date").notNull(),
+  debitPaise: integer("debit_paise").notNull().default(0),
+  creditPaise: integer("credit_paise").notNull().default(0),
+  description: text("description").notNull().default("Opening balance"),
+  createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_opening_balances_scope_uidx").on(table.vendorId, table.accountCode, table.asOfDate),
+  index("accounting_opening_balances_vendor_date_idx").on(table.vendorId, table.asOfDate),
+  check("accounting_opening_balances_amount_check", sql`(${table.debitPaise} >= 0 AND ${table.creditPaise} >= 0 AND NOT (${table.debitPaise} > 0 AND ${table.creditPaise} > 0))`),
+]);
+
+export const accountingPeriods = sqliteTable("accounting_periods", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  status: text("status", { enum: ["open", "closed"] }).notNull().default("open"),
+  closedByProfileId: integer("closed_by_profile_id").references(() => accountProfiles.id),
+  closedAt: text("closed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_periods_scope_dates_uidx").on(table.vendorId, table.periodStart, table.periodEnd),
+  index("accounting_periods_scope_status_idx").on(table.vendorId, table.status, table.periodEnd),
+  check("accounting_periods_dates_check", sql`date(${table.periodEnd}) >= date(${table.periodStart})`),
+]);
+
+export const accountingReconciliations = sqliteTable("accounting_reconciliations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  accountCode: text("account_code").notNull().references(() => chartAccounts.accountCode),
+  periodStart: text("period_start").notNull(),
+  periodEnd: text("period_end").notNull(),
+  ledgerPaise: integer("ledger_paise").notNull(),
+  statementPaise: integer("statement_paise").notNull(),
+  variancePaise: integer("variance_paise").notNull(),
+  status: text("status", { enum: ["pending", "matched", "exception"] }).notNull(),
+  note: text("note").notNull().default(""),
+  reviewedByProfileId: integer("reviewed_by_profile_id").references(() => accountProfiles.id),
+  reviewedAt: text("reviewed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("accounting_reconciliations_scope_uidx").on(table.vendorId, table.accountCode, table.periodStart, table.periodEnd),
+  index("accounting_reconciliations_status_idx").on(table.vendorId, table.status, table.periodEnd),
+]);
 
 export const notifications = sqliteTable("notifications", {
   id: integer("id").primaryKey({ autoIncrement: true }),

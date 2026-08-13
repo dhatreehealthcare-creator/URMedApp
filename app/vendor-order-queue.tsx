@@ -52,6 +52,8 @@ type QueueOrder = {
   itemPreview: string;
   createdAt: string;
   nextStatuses: string[];
+  slaDueAt: string | null;
+  slaOverdue?: boolean;
 };
 
 type QueueResponse = {
@@ -408,7 +410,7 @@ export function VendorOrderQueue() {
       {loading ? <div className={styles.loading}><RefreshCw size={18} /> Loading the pharmacy order queue…</div> : queue.orders.length ? <div className={styles.tableWrap}><table className={styles.table}>
         <thead><tr><th>Order</th><th>Customer</th><th>Medicines</th><th>Payment</th><th>Fulfilment</th><th>Status</th><th /></tr></thead>
         <tbody>{queue.orders.map((order) => <tr className={selectedId === order.id ? styles.selected : ""} key={order.id}>
-          <td><span className={styles.cell}><strong>{order.orderNumber}</strong><small>{dateTime(order.createdAt)}</small></span></td>
+          <td><span className={styles.cell}><strong>{order.orderNumber}</strong><small>{dateTime(order.createdAt)}</small>{order.slaOverdue && <small className={styles.warning}>SLA overdue · due {order.slaDueAt ? dateTime(order.slaDueAt) : "now"}</small>}</span></td>
           <td><span className={styles.cell}><strong>{order.customerName}</strong><small>{order.customerPhone}</small></span></td>
           <td><span className={styles.cell}><strong>{order.itemCount} line{order.itemCount === 1 ? "" : "s"} · {order.unitCount} units</strong><small title={order.itemPreview}>{order.itemPreview}</small></span></td>
           <td><span className={styles.cell}><strong>{money(order.totalPaise)}</strong><small>{words(order.paymentMethod)} · {words(order.paymentStatus)}</small></span></td>

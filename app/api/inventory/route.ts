@@ -7,6 +7,7 @@ import { redactPrivateVendorLocation } from "../../../lib/location-privacy";
 import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
 import { requireVendorPermission } from "../../../lib/vendor-access";
 import { attachPublishedVendorLocation } from "../../../lib/vendor-public-location";
+import { validatePricePolicy } from "../../../lib/pricing-governance";
 
 type InventoryRow = {
   id: number;
@@ -119,10 +120,12 @@ export async function POST(request: Request) {
     const salePricePaise = rupeesToPaise(body.salePrice, "Sale price");
     if (salePricePaise < 1) return Response.json({ error: "Sale price must be more than zero" }, { status: 400 });
     const purchasePricePaise = rupeesToPaise(body.purchasePrice ?? 0, "Purchase price");
+    const mrpPaise = rupeesToPaise(body.mrp ?? body.salePrice, "MRP");
     const quantity = Number(body.quantity);
     if (!Number.isInteger(quantity) || quantity < 0 || quantity > 1000000) return Response.json({ error: "Quantity is invalid" }, { status: 400 });
     const gstPercent = Number(body.gstPercent ?? 0);
-    if (![0, 5, 12, 18, 28].includes(gstPercent)) return Response.json({ error: "GST must be 0, 5, 12, 18 or 28 percent" }, { status: 400 });
+    try { validatePricePolicy({ purchasePricePaise, salePricePaise, mrpPaise, gstPercent }); }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Pricing is invalid" }, { status: 400 }); }
     const expiryDate = String(body.expiryDate ?? "").trim();
     const today = new Date().toISOString().slice(0, 10);
     if (!isStrictIsoDate(expiryDate) || expiryDate <= today) {
@@ -140,11 +143,11 @@ export async function POST(request: Request) {
     const results=await getD1().batch([
       getD1().prepare(`
       INSERT INTO pharmacy_inventory (vendor_id, product_id, batch_number, expiry_date, manufacturing_date,
-        dosage, purchase_price_paise, sale_price_paise, quantity, gst_percent, reorder_level, quarantine_status, active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 1)
+        dosage, purchase_price_paise, sale_price_paise, mrp_paise, quantity, gst_percent, reorder_level, quarantine_status, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 1)
     `).bind(
       vendorId, product.id, batchNumber, expiryDate, manufacturingDate || null,
-      String(body.dosage ?? "").trim().slice(0, 80), purchasePricePaise, salePricePaise, quantity, gstPercent,
+      String(body.dosage ?? "").trim().slice(0, 80), purchasePricePaise, salePricePaise, mrpPaise, quantity, gstPercent,
       Math.max(0, Math.min(Number(body.reorderLevel ?? 5) || 5, 100000)),
       ),
       getD1().prepare(`INSERT INTO stock_ledger (vendor_id,inventory_id,movement_type,quantity_delta,balance_after,reference_type,reference_id,reason,actor_profile_id)

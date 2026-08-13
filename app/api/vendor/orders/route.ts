@@ -33,6 +33,7 @@ type QueueOrderRow = {
   itemCount: number;
   unitCount: number;
   itemPreview: string;
+  slaDueAt: string | null;
 };
 
 type QueueSummary = {
@@ -89,6 +90,7 @@ export async function GET(request: Request) {
           o.order_status AS orderStatus, o.delivery_status AS deliveryStatus,
           o.prescription_id AS prescriptionId, o.prescription_status AS prescriptionStatus,
           o.inventory_status AS inventoryStatus, o.reservation_expires_at AS reservationExpiresAt,
+          datetime(o.created_at, '+' || CASE o.delivery_status WHEN 'awaiting_confirmation' THEN 30 WHEN 'confirmed' THEN 60 WHEN 'packed' THEN 30 WHEN 'ready_for_pickup' THEN 30 ELSE 30 END || ' minutes') AS slaDueAt,
           o.delivery_address AS deliveryAddress, o.created_at AS createdAt, o.updated_at AS updatedAt,
           (SELECT COUNT(*) FROM order_items item WHERE item.order_id = o.id) AS itemCount,
           (SELECT COALESCE(SUM(item.quantity), 0) FROM order_items item WHERE item.order_id = o.id) AS unitCount,
@@ -124,6 +126,8 @@ export async function GET(request: Request) {
         paymentMethod: order.paymentMethod,
         paymentStatus: order.paymentStatus,
       }),
+      slaDueAt: order.slaDueAt,
+      slaOverdue: Boolean(order.slaDueAt && new Date(order.slaDueAt).getTime() < Date.now() && !["completed", "cancelled"].includes(order.orderStatus)),
     }));
 
     return Response.json({

@@ -28,7 +28,9 @@ export function AdminEmailOutbox() {
   }, [status]);
 
   useEffect(() => {
-    void load().catch((reason) => setError(reason instanceof Error ? reason.message : "Email outbox is unavailable"));
+    queueMicrotask(() => {
+      void load().catch((reason) => setError(reason instanceof Error ? reason.message : "Email outbox is unavailable"));
+    });
   }, [load]);
 
   const retry = async (id: number) => {

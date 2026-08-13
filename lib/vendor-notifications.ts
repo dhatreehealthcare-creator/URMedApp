@@ -26,9 +26,9 @@ type NotificationRow = {
 
 export type VendorNotification = Omit<NotificationRow, "referenceValid"> & {
   action: null | {
-    kind: "inventory_batch" | "reorder_product";
+    kind: "inventory_batch" | "reorder_product" | "order";
     label: string;
-    targetSection: "reports" | "purchase";
+    targetSection: "reports" | "purchase" | "orders";
     referenceId: number;
   };
 };
@@ -58,6 +58,9 @@ function actionMetadata(row: NotificationRow): VendorNotification["action"] {
   if (row.referenceType === VENDOR_ALERT_REFERENCE_TYPES.reorderProduct) {
     return { kind: "reorder_product", label: "Create purchase order", targetSection: "purchase", referenceId: row.referenceId };
   }
+  if (row.referenceType === "order" && ["vendor_order_new", "vendor_order_sla_overdue"].includes(row.notificationType)) {
+    return { kind: "order", label: "Open order", targetSection: "orders", referenceId: row.referenceId };
+  }
   return null;
 }
 
@@ -84,7 +87,7 @@ function publicNotification(row: NotificationRow): VendorNotification {
 }
 
 const inventoryNotificationPredicate = `notification.profile_id IS NULL
-  AND notification.notification_type IN ('inventory_near_expiry','inventory_low_stock','inventory_zero_stock')`;
+  AND notification.notification_type IN ('inventory_near_expiry','inventory_low_stock','inventory_zero_stock','vendor_order_new','vendor_order_sla_overdue')`;
 
 const selectNotification = `SELECT notification.id,notification.notification_type AS notificationType,
   notification.severity,notification.title,notification.message,
@@ -101,6 +104,7 @@ const selectNotification = `SELECT notification.id,notification.notification_typ
     WHEN notification.reference_type='${VENDOR_ALERT_REFERENCE_TYPES.reorderProduct}' THEN EXISTS(
       SELECT 1 FROM pharmacy_inventory inventory JOIN products product ON product.id=inventory.product_id
       WHERE inventory.vendor_id=notification.vendor_id AND inventory.product_id=notification.reference_id AND product.active=1)
+    WHEN notification.reference_type='order' THEN 1
     ELSE 0 END AS referenceValid
   FROM notifications notification`;
 

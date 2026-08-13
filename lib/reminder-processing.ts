@@ -194,8 +194,6 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
   let processedRefills = 0;
   let processedPills = 0;
   let emailsQueued = 0;
-  let emailsSent = 0;
-  let emailsUnavailableOrFailed = 0;
   let emailsNotEnabled = 0;
   for (const row of refills) {
     const statements: D1PreparedStatement[] = [
@@ -217,7 +215,6 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
         eventType: "refill_due",
         payload: { medicineName: row.medicineName, dueDate: row.dueDate },
         dedupeKey: `refill_due:${row.id}:${row.localDate}`,
-        whenPreviousStatementChanged: true,
       }));
     }
     const results = await input.db.batch(statements);
@@ -243,7 +240,6 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
         eventType: "pill_due",
         payload: { medicineName: row.medicineName, reminderTime: row.reminderTime, dosageInstructions: row.dosageInstructions },
         dedupeKey: `pill_due:${row.id}:${row.localDate}`,
-        whenPreviousStatementChanged: true,
       }));
     }
     const results = statements.length ? await input.db.batch(statements) : [];
@@ -259,7 +255,7 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
       pills: processedPills,
       total: processedRefills + processedPills,
     },
-    email: { queued: emailsQueued, sent: emailsSent, unavailableOrFailed: emailsUnavailableOrFailed, notEnabled: emailsNotEnabled },
+    email: { queued: emailsQueued, sent: 0, unavailableOrFailed: 0, notEnabled: emailsNotEnabled },
   };
   if (input.appendAudit !== false && result.processed.total > 0) {
     await appendAuditEvent({

@@ -9,6 +9,8 @@ const migrationCount = Number(process.env.URMED_INTEGRATION_MIGRATION_COUNT);
 const inspectPersistence = globalThis.__URMED_INTEGRATION_INSPECT__;
 const triggerScheduled = globalThis.__URMED_INTEGRATION_SCHEDULED__;
 const setTestClaims = globalThis.__URMED_INTEGRATION_SET_TEST_CLAIMS__;
+const enableEmail = globalThis.__URMED_INTEGRATION_ENABLE_EMAIL__;
+const inspectEmailOutbox = globalThis.__URMED_INTEGRATION_EMAIL_OUTBOX_INSPECT__;
 const expireOrder = globalThis.__URMED_INTEGRATION_EXPIRE_ORDER__;
 const orderEvidence = globalThis.__URMED_INTEGRATION_ORDER_EVIDENCE__;
 const deliveryEvidence = globalThis.__URMED_INTEGRATION_DELIVERY_EVIDENCE__;
@@ -17,6 +19,8 @@ for (const [name, value] of Object.entries({
   inspectPersistence,
   triggerScheduled,
   setTestClaims,
+  enableEmail,
+  inspectEmailOutbox,
   expireOrder,
   orderEvidence,
   deliveryEvidence,
@@ -118,18 +122,36 @@ function signed(secret, value) {
   return createHmac("sha256", secret).update(value).digest("hex");
 }
 
-async function createOnlineOrder(quantity, inventoryId = context.inventoryId, prescriptionId) {
+async function createOnlineOrder(quantity, inventoryId = context.inventoryId, prescriptionId, deliveryMethod = "pickup") {
   return expectStatus(api("/api/orders", {
     token: context.tokens.customer,
     json: {
       items: [{ inventoryId, quantity }],
       paymentMethod: "online",
-      deliveryMethod: "pickup",
+      deliveryMethod,
       placeOfSupplyStateCode: "36",
       customerAddressId: context.customerAddressId,
       ...(prescriptionId ? { prescriptionId } : {}),
     },
   }), 201, "create online order");
+}
+
+async function captureOnlineOrder(orderResult, label) {
+  const orderId = orderResult.payload.order.id;
+  const providerOrder = await expectStatus(api("/api/payments/razorpay/order", {
+    token: context.tokens.customer, json: { orderId },
+  }), 200, `${label} provider order`);
+  const providerOrderId = providerOrder.payload.id;
+  const paymentId = `pay_p308_${orderId}_${orderResult.payload.order.totalPaise}`;
+  const captureBody = JSON.stringify({ event: "payment.captured", payload: { payment: { entity: {
+    id: paymentId, order_id: providerOrderId, amount: orderResult.payload.order.totalPaise,
+    currency: "INR", status: "captured",
+  } } } });
+  await expectStatus(api("/api/webhooks/razorpay", {
+    body: captureBody,
+    headers: { "content-type": "application/json", "x-razorpay-signature": signed(webhookSecret, captureBody) },
+  }), 200, `${label} payment capture webhook`);
+  return { providerOrderId, paymentId };
 }
 
 async function inventoryMine(token = context.tokens.vendor) {
@@ -225,6 +247,7 @@ export async function runPhase0IntegrationSuite() {
     const vendorProfile = await expectStatus(api("/api/auth/profile", { token: context.tokens.vendor }), 200, "vendor tenant identity");
     context.vendorId = vendorProfile.payload.profile.vendorId;
     assert.ok(context.vendorId > 0);
+    await enableEmail("customer@urmed.test");
   });
 
   await scenario("vendor notification inbox is private, tenant-scoped, versioned, audited, and re-alertable", async () => {
@@ -477,6 +500,8 @@ export async function runPhase0IntegrationSuite() {
       token: context.tokens.vendorCounterStaff,
     }), 200, "counter staff sale.write tracking read");
     assert.match(counterTracking.response.headers.get("cache-control") ?? "", /private.*no-store/i);
+    const vendorNotifications = await expectStatus(api("/api/vendor/notifications?includeResolved=true&limit=100", { token: context.tokens.vendor }), 200, "vendor order notification inbox");
+    assert.ok(vendorNotifications.payload.notifications.some((notification) => notification.notificationType === "vendor_order_new" && notification.referenceId === orderId));
 
     const before = await orderEvidence(orderId);
     for (const [token, label] of [
@@ -596,9 +621,24 @@ export async function runPhase0IntegrationSuite() {
     await expectStatus(api(`/api/orders/${orderId}/tracking`, { token: context.tokens.delivery, json: {
       ...pickupProof, status: "out_for_delivery", capturedAt: new Date(Date.parse(pickedUpAt) + 1_000).toISOString(),
     } }), 200, "fresh out-for-delivery proof");
+    await expectStatus(api(`/api/orders/${orderId}/cod-collection`, {
+      token: context.tokens.customer,
+      json: { amountPaise: order.payload.order.totalPaise, tenderMode: "cash", receiptReference: "COD-CUSTOMER-BYPASS", idempotencyKey: "cod-customer-bypass-001" },
+    }), 403, "customer cannot record COD collection");
+    const collection = await expectStatus(api(`/api/orders/${orderId}/cod-collection`, {
+      token: context.tokens.delivery,
+      json: { amountPaise: order.payload.order.totalPaise, tenderMode: "cash", receiptReference: "COD-DELIVERY-900", idempotencyKey: "cod-delivery-900" },
+    }), 200, "assigned rider records COD collection evidence");
+    assert.equal(collection.payload.custodyStatus, "on_hand");
+    assert.equal((await expectStatus(api(`/api/orders/${orderId}/cod-collection`, {
+      token: context.tokens.delivery,
+      json: { amountPaise: order.payload.order.totalPaise, tenderMode: "cash", receiptReference: "COD-DELIVERY-900", idempotencyKey: "cod-delivery-900" },
+    }), 200, "replayed COD collection evidence")).payload.duplicate, true);
     await expectStatus(api(`/api/orders/${orderId}/tracking`, { token: context.tokens.delivery, json: {
       ...pickupProof, status: "delivered", capturedAt: new Date(Date.parse(pickedUpAt) + 2_000).toISOString(),
     } }), 200, "fresh delivered proof issues paid GST invoice");
+    const codEvidence = await orderEvidence(orderId);
+    assert.deepEqual({ tenderMode: codEvidence.codCollection.tenderMode, amountPaise: codEvidence.codCollection.amountPaise, custodyStatus: codEvidence.codCollection.custodyStatus }, { tenderMode: "cash", amountPaise: order.payload.order.totalPaise, custodyStatus: "on_hand" });
 
     context.invoiceOrderId = orderId;
     const deliveredDetail = await expectStatus(api(`/api/customer/orders/${orderId}`, { token: context.tokens.customer }), 200, "delivered customer invoice metadata");
@@ -1173,6 +1213,57 @@ export async function runPhase0IntegrationSuite() {
     assert.equal(supplierAfterReturns.payload.ledger.some((entry) => entry.accountCode === "SUPPLIER_PAYABLE"), true);
   });
 
+  await scenario("pricing governance is tenant-scoped, effective-dated, conversion-governed, and MRP-enforced", async () => {
+    await expectStatus(api("/api/vendor/pricing?inventoryId=900060", { token: context.tokens.customer }), 403, "customer pricing access denied");
+    const initial = await expectStatus(api("/api/vendor/pricing?inventoryId=900060", { token: context.tokens.vendor }), 200, "initial price history");
+    assert.ok(Array.isArray(initial.payload.prices));
+    const price = await expectStatus(api("/api/vendor/pricing", { token: context.tokens.vendor, json: {
+      action: "price", inventoryId: 900060, purchasePricePaise: 750, salePricePaise: 1100, mrpPaise: 1400,
+      gstPercent: 5, effectiveFrom: isoDate(), reason: "P209 approved repricing",
+    } }), 201, "effective price update");
+    assert.equal(price.payload.appliedNow, true);
+    await expectStatus(api("/api/vendor/pricing", { token: context.tokens.vendor, json: {
+      action: "price", inventoryId: 900060, salePricePaise: 1500, mrpPaise: 1400, gstPercent: 5,
+      effectiveFrom: isoDate(), reason: "P209 invalid MRP override",
+    } }), 400, "sale price above MRP rejected");
+    const conversion = await expectStatus(api("/api/vendor/pricing", { token: context.tokens.vendor, json: {
+      action: "conversion", productId: 900060, presentationUom: "strip", baseUom: "tablet", baseUnitsPerPresentation: 10,
+      effectiveFrom: isoDate(),
+    } }), 201, "pack conversion proposal");
+    assert.equal(conversion.payload.governanceStatus, "pending");
+    const barcode = await expectStatus(api("/api/vendor/pricing", { token: context.tokens.vendor, json: {
+      action: "barcode", productId: 900060, code: "4006381333931", symbology: "GTIN-13",
+    } }), 201, "barcode proposal");
+    const approvedConversion = await expectStatus(api("/api/admin/pricing", { method: "PATCH", token: context.tokens.admin, json: {
+      action: "conversion_approve", id: conversion.payload.conversionId, reason: "P209 governed strip conversion",
+    } }), 200, "admin conversion approval");
+    assert.equal(approvedConversion.payload.governanceStatus, "approved");
+    const approvedBarcode = await expectStatus(api("/api/admin/pricing", { method: "PATCH", token: context.tokens.admin, json: {
+      action: "barcode_approve", id: barcode.payload.barcodeId, reason: "P209 verified GTIN",
+    } }), 200, "admin barcode approval");
+    assert.equal(approvedBarcode.payload.status, "approved");
+    const final = await expectStatus(api("/api/vendor/pricing?inventoryId=900060", { token: context.tokens.vendor }), 200, "final pricing governance state");
+    assert.equal(final.payload.prices[0].salePricePaise, 1100);
+    assert.equal(final.payload.conversions[0].baseUnitsPerPresentation, 10);
+    assert.equal(final.payload.barcodes[0].code, "4006381333931");
+    await expectStatus(api("/api/vendor/pricing", { token: context.tokens.vendorOperationalTwo, json: {
+      action: "price", inventoryId: 900060, salePricePaise: 1050, mrpPaise: 1300, gstPercent: 5,
+      effectiveFrom: isoDate(), reason: "Cross tenant pricing attempt",
+    } }), 404, "cross-vendor pricing denied");
+  });
+
+  await scenario("accounting statements are governed, balanced, tenant-scoped, and private", async () => {
+    await expectStatus(api("/api/admin/accounting?start=2026-01-01&end=2026-12-31", { token: context.tokens.customer }), 403, "customer accounting denied");
+    const admin = await expectStatus(api("/api/admin/accounting?start=2026-01-01&end=2026-12-31", { token: context.tokens.admin }), 200, "admin accounting statements");
+    assert.ok(Array.isArray(admin.payload.accounts));
+    assert.equal(typeof admin.payload.trialBalance.balanced, "boolean");
+    assert.equal(admin.response.headers.get("cache-control"), "private, no-store");
+    const vendor = await expectStatus(api("/api/vendor/accounting?start=2026-01-01&end=2026-12-31", { token: context.tokens.vendor }), 200, "vendor accounting statements");
+    assert.equal(vendor.payload.period.vendorId, context.vendorId);
+    assert.equal(typeof vendor.payload.trialBalance.balanced, "boolean");
+    await expectStatus(api("/api/vendor/accounting?start=2026-12-31&end=2026-01-01", { token: context.tokens.vendor }), 400, "reversed accounting period rejected");
+  });
+
   await scenario("inventory adjustments and cycle counts are guarded, tenant-scoped, and idempotent", async () => {
     await expectStatus(api("/api/vendor/inventory-reconciliation"), 401, "unauthenticated inventory reconciliation");
     await expectStatus(api("/api/vendor/inventory-reconciliation", { token: context.tokens.customer }), 403, "customer inventory reconciliation");
@@ -1374,6 +1465,53 @@ export async function runPhase0IntegrationSuite() {
       token: context.tokens.customer,
     }), 403, "customer vendor order detail");
 
+    await scenario("pickup and pharmacy self-delivery fulfilment reach finality and finalized online returns are isolated", async () => {
+      const pickupOrder = await createOnlineOrder(1, 900050, undefined, "pickup");
+      const pickupOrderId = pickupOrder.payload.order.id;
+      await captureOnlineOrder(pickupOrder, "P308 pickup");
+      await expectStatus(api(`/api/orders/${pickupOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "confirmed", note: "P308 pickup accepted" } }), 200, "P308 pickup confirmed");
+      await expectStatus(api(`/api/orders/${pickupOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "packed", note: "P308 pickup packed" } }), 200, "P308 pickup packed");
+      await expectStatus(api(`/api/orders/${pickupOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "ready_for_pickup", note: "P308 pickup ready" } }), 200, "P308 pickup ready");
+      await expectStatus(api(`/api/orders/${pickupOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "delivered", note: "P308 customer collected" } }), 200, "P308 pickup completed");
+      const pickupEvidence = await orderEvidence(pickupOrderId);
+      assert.equal(pickupEvidence.order.orderStatus, "completed");
+      assert.equal(pickupEvidence.order.deliveryStatus, "delivered");
+      assert.equal(pickupEvidence.order.inventoryStatus, "committed");
+      const pickupDetail = await expectStatus(api(`/api/customer/orders/${pickupOrderId}`, { token: context.tokens.customer }), 200, "P308 pickup invoice metadata");
+      assert.ok(pickupDetail.payload.order.invoice.id);
+
+      const onlineReturn = {
+        action: "return", sourceType: "online", sourceId: pickupOrderId, inventoryId: 900050,
+        quantity: 1, condition: "sealed", reason: "P308 pickup customer return", idempotencyKey: `p308-online-return-${pickupOrderId}`,
+        refundMethod: "credit",
+      };
+      const returned = await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendor, json: onlineReturn }), 201, "P308 online sealed return");
+      assert.equal(returned.payload.disposition, "restocked");
+      assert.match(returned.payload.creditNoteNumber, /^CN-/);
+      const duplicateReturn = await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendor, json: onlineReturn }), 200, "P308 online return replay");
+      assert.equal(duplicateReturn.payload.duplicate, true);
+      await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendor, json: { ...onlineReturn, idempotencyKey: `p308-online-return-excess-${pickupOrderId}`, quantity: 2 } }), 409, "P308 online excess return");
+      await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendorOperationalTwo, json: onlineReturn }), 404, "P308 online cross-vendor return");
+      await expectStatus(api(`/api/orders/${pickupOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "cancelled", note: "Cannot cancel finalized returned order" } }), 409, "P308 returned order cannot be cancelled");
+      const returnedEvidence = await orderEvidence(pickupOrderId);
+      assert.equal(returnedEvidence.order.orderStatus, "completed");
+      assert.equal(returnedEvidence.inventory.find((row) => row.id === 900050).quantity, 20);
+
+      const selfDeliveryOrder = await createOnlineOrder(1, 900050, undefined, "pharmacy");
+      const selfDeliveryOrderId = selfDeliveryOrder.payload.order.id;
+      await captureOnlineOrder(selfDeliveryOrder, "P308 pharmacy self-delivery");
+      await expectStatus(api(`/api/orders/${selfDeliveryOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "confirmed", note: "P308 self-delivery accepted" } }), 200, "P308 self-delivery confirmed");
+      await expectStatus(api(`/api/orders/${selfDeliveryOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "packed", note: "P308 self-delivery packed" } }), 200, "P308 self-delivery packed");
+      await expectStatus(api(`/api/orders/${selfDeliveryOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "out_for_delivery", note: "P308 pharmacy rider dispatched" } }), 200, "P308 self-delivery dispatched");
+      await expectStatus(api(`/api/orders/${selfDeliveryOrderId}/tracking`, { token: context.tokens.vendor, json: { status: "delivered", note: "P308 pharmacy delivery completed" } }), 200, "P308 self-delivery completed");
+      const selfDeliveryEvidence = await orderEvidence(selfDeliveryOrderId);
+      assert.equal(selfDeliveryEvidence.order.orderStatus, "completed");
+      assert.equal(selfDeliveryEvidence.order.deliveryStatus, "delivered");
+      const selfDeliveryDetail = await expectStatus(api(`/api/customer/orders/${selfDeliveryOrderId}`, { token: context.tokens.customer }), 200, "P308 self-delivery invoice metadata");
+      assert.ok(selfDeliveryDetail.payload.order.invoice.id);
+      assert.equal(selfDeliveryEvidence.inventory.find((row) => row.id === 900050).quantity, 19);
+    });
+
     const failed = await createOnlineOrder(3);
     context.failedOrderId = failed.payload.order.id;
     const failedProviderOrderId = (await expectStatus(api("/api/payments/razorpay/order", {
@@ -1542,6 +1680,23 @@ export async function runPhase0IntegrationSuite() {
     assert.equal(inventoryRow((await inventoryMine()).payload, 900009).reservedQuantity, 0);
   });
 
+  await scenario("transactional email outbox is atomic, scheduled, idempotent, and admin-visible", async () => {
+    const queued = await expectStatus(api("/api/admin/email-outbox?status=queued", { token: context.tokens.admin }), 200, "admin queued email outbox");
+    assert.match(queued.response.headers.get("cache-control") ?? "", /private.*no-store/i);
+    assert.ok(queued.payload.items.some((item) => item.eventType === "order_placed"));
+    assert.equal(queued.payload.items.some((item) => /@/.test(item.recipient) && !/\*\*\*/.test(item.recipient)), false);
+    await expectStatus(api("/api/admin/email-outbox", { token: context.tokens.customer }), 403, "customer email outbox access");
+    const firstRun = await triggerScheduled("7,17,27,37,47,57 * * * *");
+    assert.equal(firstRun.status, 200, firstRun.text);
+    const repeatedRun = await triggerScheduled("7,17,27,37,47,57 * * * *");
+    assert.equal(repeatedRun.status, 200, repeatedRun.text);
+    const evidence = await inspectEmailOutbox();
+    assert.equal(evidence.deleteGuard, true);
+    assert.ok(evidence.rows.some((row) => ["retry_wait", "sent", "dead_letter"].includes(row.status)));
+    const after = await expectStatus(api("/api/admin/email-outbox", { token: context.tokens.admin }), 200, "admin email outbox after scheduled processing");
+    assert.equal(after.payload.items.length, queued.payload.items.length);
+  });
+
   await scenario("expired reservations cannot pay and scheduled recovery is idempotent without traffic", async () => {
     const expired = await createOnlineOrder(6);
     context.expiredOrderId = expired.payload.order.id;
@@ -1621,6 +1776,19 @@ export async function runPhase0IntegrationSuite() {
       json: { ...otcRequest, items: [{ productId: otc.productId, quantity: 1 }] },
     }), 409, "counter idempotency fingerprint conflict");
     await expectStatus(api(`/api/vendor/pos/sales/${context.offlineSaleId}`, { token: context.tokens.vendorOperationalTwo }), 404, "cross-tenant counter receipt");
+
+    const offlineReturn = {
+      action: "return", sourceType: "offline", sourceId: context.offlineSaleId, inventoryId: 900033,
+      quantity: 1, condition: "sealed", reason: "P306 sealed customer return", idempotencyKey: "p306-offline-return-001",
+      refundMethod: "credit",
+    };
+    const offlineReturnResult = await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendor, json: offlineReturn }), 201, "completed offline sale return and credit note");
+    assert.match(offlineReturnResult.payload.creditNoteNumber, /^CN-/);
+    assert.equal(offlineReturnResult.payload.disposition, "restocked");
+    const offlineReturnReplay = await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendor, json: offlineReturn }), 200, "idempotent offline return replay");
+    assert.equal(offlineReturnReplay.payload.duplicate, true);
+    await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendor, json: { ...offlineReturn, idempotencyKey: "p306-offline-return-002", quantity: 2 } }), 409, "excess offline return rejected");
+    await expectStatus(api("/api/vendor/operations", { token: context.tokens.vendorOperationalTwo, json: offlineReturn }), 404, "cross-tenant return denied");
 
     const failedAuditUpload = new FormData();
     failedAuditUpload.set("purpose", "offline_prescription");
@@ -2097,7 +2265,7 @@ export async function runPhase0IntegrationSuite() {
     assert.deepEqual(evidence.offlineSaleStock.map((row) => ({ ...row })), [
       { id: 900030, quantity: 2, reservedQuantity: 2 },
       { id: 900031, quantity: 19, reservedQuantity: 0 },
-      { id: 900033, quantity: 8, reservedQuantity: 0 },
+      { id: 900033, quantity: 9, reservedQuantity: 0 },
     ]);
     assert.deepEqual(evidence.offlineSaleMovements.map((row) => ({ ...row })), [
       { inventoryId: 900030, quantityDelta: -18, balanceAfter: 2 },
