@@ -1,4 +1,5 @@
 import { getD1 } from "../../../../db/d1";
+import { getRuntimeEnv } from "../../../../lib/runtime-env";
 import { errorResponse } from "../../../../lib/auth-server";
 import { requireVendorPermission } from "../../../../lib/vendor-access";
 import { normalizeBarcode, positiveInteger, presentationToBase, PricingGovernanceError, validatePricePolicy, isoDate } from "../../../../lib/pricing-governance";
@@ -32,7 +33,9 @@ export async function POST(request: Request) {
       const inventoryId = positiveInteger(body.inventoryId, "Inventory batch");
       const inventory = await db.prepare("SELECT id,product_id AS productId,purchase_price_paise AS purchasePricePaise,sale_price_paise AS salePricePaise,mrp_paise AS mrpPaise,gst_percent AS gstPercent FROM pharmacy_inventory WHERE id=? AND vendor_id=? AND active=1").bind(inventoryId, vendorId).first<{id:number;productId:number;purchasePricePaise:number;salePricePaise:number;mrpPaise:number;gstPercent:number}>();
       if (!inventory) return Response.json({ error: "Inventory batch was not found" }, { status: 404, headers });
-      const policy = validatePricePolicy({ purchasePricePaise: body.purchasePricePaise ?? inventory.purchasePricePaise, salePricePaise: body.salePricePaise, mrpPaise: body.mrpPaise, gstPercent: body.gstPercent ?? inventory.gstPercent });
+      const ceiling = await db.prepare("SELECT ceiling_price_paise AS ceilingPaise FROM product_ceiling_prices WHERE product_id=? AND date(effective_from)<=date(?) AND (effective_until IS NULL OR date(effective_until)>=date(?)) ORDER BY date(effective_from) DESC,id DESC LIMIT 1").bind(inventory.productId, new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10)).first<{ ceilingPaise:number }>();
+      const ceilingEnforced = getRuntimeEnv().NPPA_CEILING_MODE === "enforce";
+      const policy = validatePricePolicy({ purchasePricePaise: body.purchasePricePaise ?? inventory.purchasePricePaise, salePricePaise: body.salePricePaise, mrpPaise: body.mrpPaise, gstPercent: body.gstPercent ?? inventory.gstPercent }, ceiling?.ceilingPaise ?? null, ceilingEnforced);
       const effectiveFrom = isoDate(body.effectiveFrom ?? new Date().toISOString().slice(0, 10), "Effective date")!;
       const reason = String(body.reason ?? "").trim().slice(0, 240); if (reason.length < 5) return Response.json({ error: "A pricing reason is required" }, { status: 400, headers });
       const result = await db.batch([

@@ -21,7 +21,7 @@ export function isoDate(value: unknown, label: string, required = true) {
   return text;
 }
 
-export function validatePricePolicy(input: { purchasePricePaise: unknown; salePricePaise: unknown; mrpPaise: unknown; gstPercent: unknown }, ceilingPaise?: number | null) {
+export function validatePricePolicy(input: { purchasePricePaise: unknown; salePricePaise: unknown; mrpPaise: unknown; gstPercent: unknown }, ceilingPaise?: number | null, enforceCeiling = false) {
   const purchasePricePaise = Number(input.purchasePricePaise);
   const salePricePaise = Number(input.salePricePaise);
   const mrpPaise = Number(input.mrpPaise);
@@ -30,6 +30,7 @@ export function validatePricePolicy(input: { purchasePricePaise: unknown; salePr
   if (!Number.isSafeInteger(salePricePaise) || salePricePaise <= 0) throw new PricingGovernanceError("Sale price must be positive");
   if (!Number.isSafeInteger(mrpPaise) || mrpPaise <= 0 || salePricePaise > mrpPaise) throw new PricingGovernanceError("Sale price cannot exceed tax-inclusive MRP");
   if (![0, 5, 12, 18, 28].includes(gstPercent)) throw new PricingGovernanceError("GST must be 0, 5, 12, 18 or 28 percent");
+  if (enforceCeiling && ceilingPaise != null && mrpPaise > ceilingPaise) throw new PricingGovernanceError("MRP exceeds the effective governed ceiling");
   return { purchasePricePaise, salePricePaise, mrpPaise, gstPercent, ceilingAdvisory: ceilingPaise != null && mrpPaise > ceilingPaise };
 }
 

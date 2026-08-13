@@ -12,6 +12,7 @@ export type UrmedRuntimeEnv = {
   REMINDER_JOB_SECRET?: string;
   EINVOICE_API_URL?: string;
   EINVOICE_API_KEY?: string;
+  NPPA_CEILING_MODE?: "advisory" | "enforce";
 };
 
 export function getRuntimeEnv(): UrmedRuntimeEnv {
