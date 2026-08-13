@@ -1,34 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
   BadgeIndianRupee,
   Baby,
-  Banknote,
-  Check,
-  CheckCircle2,
   ChevronDown,
   Clock3,
-  CreditCard,
   HeartPulse,
   MapPin,
-  Minus,
   Navigation,
   Pill,
-  Plus,
   Search,
   ShieldCheck,
   ShoppingCart,
   Sparkles,
-  Star,
   Stethoscope,
-  Store,
   Truck,
-  Upload,
   UserRound,
-  X,
 } from "lucide-react";
 
 const categories = [
@@ -67,95 +57,20 @@ type CatalogApiProduct = {
   pharmacyName: string | null;
 };
 
-const products: StorefrontProduct[] = [
-  {
-    id: 1,
-    name: "Dolo 650 Tablet",
-    composition: "Paracetamol 650 mg",
-    pack: "15 tablets",
-    price: "₹31.20",
-    mrp: "₹34.70",
-    discount: "10% off",
-    pharmacy: "3 pharmacies",
-    tone: "mint",
-    rx: false,
-  },
-  {
-    id: 2,
-    name: "Telma 40 Tablet",
-    composition: "Telmisartan 40 mg",
-    pack: "30 tablets",
-    price: "₹198.40",
-    mrp: "₹248.00",
-    discount: "20% off",
-    pharmacy: "2 pharmacies",
-    tone: "peach",
-    rx: true,
-  },
-  {
-    id: 3,
-    name: "Shelcal 500",
-    composition: "Calcium + Vitamin D3",
-    pack: "15 tablets",
-    price: "₹118.10",
-    mrp: "₹131.20",
-    discount: "10% off",
-    pharmacy: "5 pharmacies",
-    tone: "sky",
-    rx: false,
-  },
-  {
-    id: 4,
-    name: "Accu-Chek Active",
-    composition: "Blood glucose test strips",
-    pack: "50 strips",
-    price: "₹899.00",
-    mrp: "₹1,049.00",
-    discount: "14% off",
-    pharmacy: "2 pharmacies",
-    tone: "lilac",
-    rx: false,
-  },
-];
-
-const pharmacies = [
-  { name: "Sri Balaji Pharmacy", distance: "1.2 km", eta: "24–35 min", rating: "4.8" },
-  { name: "LifeCare Medicals", distance: "2.4 km", eta: "35–45 min", rating: "4.7" },
-  { name: "Apollo Partner Pharmacy", distance: "3.1 km", eta: "45–55 min", rating: "4.9" },
-];
-
 export default function Home() {
   const [query, setQuery] = useState("");
-  const [cart, setCart] = useState<number[]>([1, 3]);
-  const [cartOpen, setCartOpen] = useState(false);
-  const [payment, setPayment] = useState<"online" | "cod">("online");
-  const [delivery, setDelivery] = useState<"pharmacy" | "urmed">("urmed");
-  const [orderPlaced, setOrderPlaced] = useState(false);
   const [catalogResults, setCatalogResults] = useState<StorefrontProduct[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
 
-  const filteredProducts = useMemo(() => {
-    const value = query.trim().toLowerCase();
-    if (!value) return products;
-    return products.filter((product) => `${product.name} ${product.composition}`.toLowerCase().includes(value));
-  }, [query]);
-
   useEffect(() => {
     const value = query.trim();
-    if (value.length < 2) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCatalogResults([]);
-      setCatalogError("");
-      setCatalogLoading(false);
-      return;
-    }
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       setCatalogLoading(true);
       setCatalogError("");
       try {
-        const response = await fetch(`/api/catalog?q=${encodeURIComponent(value)}&limit=24`, { signal: controller.signal });
+        const response = await fetch(`/api/catalog?${value.length >= 2 ? `q=${encodeURIComponent(value)}&` : ""}limit=24`, { signal: controller.signal });
         if (!response.ok) throw new Error("Recovered catalogue is temporarily unavailable");
         const payload = await response.json() as { products: CatalogApiProduct[] };
         const tones = ["mint", "peach", "sky", "lilac"];
@@ -166,7 +81,7 @@ export default function Home() {
           pack: product.packaging || product.manufacturer || "Pack information unavailable",
           price: product.salePricePaise ? `₹${(product.salePricePaise / 100).toFixed(2)}` : "Price on stock check",
           mrp: "",
-          discount: "Recovered",
+          discount: product.inventoryId ? "Live stock" : "Catalogue",
           pharmacy: product.pharmacyName ? `${product.pharmacyName} · ${product.availableQuantity} available` : `shared catalogue · Product ID ${product.legacyId}`,
           tone: tones[index % tones.length],
           rx: Boolean(product.prescriptionRequired),
@@ -179,20 +94,12 @@ export default function Home() {
       } finally {
         if (!controller.signal.aborted) setCatalogLoading(false);
       }
-    }, 300);
+    }, value.length >= 2 ? 300 : 0);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [query]);
 
   const searchingRecoveredCatalogue = query.trim().length >= 2;
-  const displayedProducts = searchingRecoveredCatalogue ? catalogResults : filteredProducts;
-
-  const cartProducts = cart.map((id) => products.find((product) => product.id === id)).filter(Boolean) as typeof products;
-  const cartTotal = cartProducts.reduce((total, product) => total + Number(product.price.replace(/[₹,]/g, "")), 0);
-
-  const addProduct = (id: number) => {
-    setCart((current) => [...current, id]);
-    setCartOpen(true);
-  };
+  const displayedProducts = catalogResults;
 
   return (
     <main className="site-shell">
@@ -205,7 +112,7 @@ export default function Home() {
 
           <button className="location-control" type="button">
             <MapPin size={18} />
-            <span><small>Delivering to</small>Hyderabad, Telangana</span>
+            <span><small>Delivery location</small>Choose your saved address at checkout</span>
             <ChevronDown size={16} />
           </button>
 
@@ -220,11 +127,10 @@ export default function Home() {
             <Link className="icon-button" href="/customer" aria-label="Customer account">
               <UserRound size={20} />
             </Link>
-            <button className="cart-button" onClick={() => setCartOpen(true)} type="button">
+            <Link className="cart-button" href="/customer">
               <ShoppingCart size={20} />
-              <span>Cart</span>
-              <b>{cart.length}</b>
-            </button>
+              <span>Live cart</span>
+            </Link>
           </div>
         </div>
       </header>
@@ -262,8 +168,8 @@ export default function Home() {
             <div className="delivery-card">
               <div className="delivery-head">
                 <span className="delivery-icon"><Truck size={25} /></span>
-                <div><small>Order #UR1048</small><strong>Out for delivery</strong></div>
-                <span className="live-dot">Live</span>
+                <div><small>Secure marketplace</small><strong>Live pharmacy inventory</strong></div>
+                <span className="live-dot">Verified</span>
               </div>
               <div className="route-map">
                 <div className="route-line" />
@@ -272,8 +178,8 @@ export default function Home() {
                 <span className="route-end"><MapPin size={17} /></span>
               </div>
               <div className="delivery-meta">
-                <div><Clock3 size={17} /><span><small>Arriving in</small><strong>18 minutes</strong></span></div>
-                <div className="rider-stack"><i>RK</i><span><small>Delivery partner</small><strong>Ravi Kumar</strong></span></div>
+                <div><Clock3 size={17} /><span><small>At checkout</small><strong>Stock revalidated</strong></span></div>
+                <div className="rider-stack"><i>Rx</i><span><small>Prescription medicines</small><strong>Pharmacist review</strong></span></div>
               </div>
             </div>
 
@@ -281,10 +187,7 @@ export default function Home() {
               <ShieldCheck size={19} />
               <span><strong>Prescription verified</strong><small>Reviewed by pharmacist</small></span>
             </div>
-            <div className="floating-card rating-card">
-              <Star size={18} fill="currentColor" />
-              <span><strong>4.8 average rating</strong><small>Across partner pharmacies</small></span>
-            </div>
+            <div className="floating-card rating-card"><ShoppingCart size={18} /><span><strong>Separate pharmacy orders</strong><small>Price and delivery checked per pharmacy</small></span></div>
           </div>
         </div>
       </section>
@@ -310,12 +213,12 @@ export default function Home() {
           <div><span className="section-kicker">{searchingRecoveredCatalogue ? "RECOVERED MEDICINE DATABASE" : "POPULAR NEAR YOU"}</span><h2 id="product-title">{searchingRecoveredCatalogue ? `Catalogue results for “${query.trim()}”` : "Everyday health essentials"}</h2></div>
           <a href="#medicines">Browse all medicines <ArrowRight size={17} /></a>
         </div>
-        {catalogLoading && <div className="catalogue-state"><span className="catalogue-loader" /> Searching 100,041 recovered medicines…</div>}
+        {catalogLoading && <div className="catalogue-state"><span className="catalogue-loader" /> Searching the live medicine catalogue…</div>}
         {catalogError && <div className="catalogue-state error">{catalogError}</div>}
         {!catalogLoading && searchingRecoveredCatalogue && !catalogError && !displayedProducts.length && <div className="catalogue-state">No recovered medicine matched this search.</div>}
         <div className="product-grid">
           {displayedProducts.map((product) => (
-            <article className="product-card" key={product.name}>
+            <article className="product-card" key={product.id}>
               <div className={`product-art ${product.tone}`}>
                 <Pill size={44} strokeWidth={1.5} />
                 <span>{product.discount}</span>
@@ -328,7 +231,7 @@ export default function Home() {
                 <div className="availability"><span /> Available at {product.pharmacy}</div>
                 <div className="product-footer">
                   <div><strong className={product.migrated ? "catalogue-price" : ""}>{product.price}</strong>{product.mrp && <del>{product.mrp}</del>}</div>
-                  <button disabled={Boolean(product.migrated && !product.inventoryId)} onClick={() => product.inventoryId ? window.location.assign("/customer") : !product.migrated && addProduct(product.id)} type="button">{product.inventoryId ? "Order" : product.migrated ? "Stock check" : "Add"}</button>
+                  <button disabled={!product.inventoryId} onClick={() => product.inventoryId && window.location.assign("/customer")} type="button">{product.inventoryId ? "Add in live cart" : "Stock unavailable"}</button>
                 </div>
               </div>
             </article>
@@ -343,16 +246,7 @@ export default function Home() {
           <p>URMED connects customers with licensed local pharmacies while giving every partner the tools to manage stock, orders, payments and delivery.</p>
           <a className="primary-link" href="#how-it-works">See how URMED works <ArrowRight size={18} /></a>
         </div>
-        <div className="pharmacy-list">
-          {pharmacies.map((pharmacy, index) => (
-            <article className="pharmacy-row" key={pharmacy.name}>
-              <span className="pharmacy-avatar">{pharmacy.name.split(" ").slice(0, 2).map((part) => part[0]).join("")}</span>
-              <div><strong>{pharmacy.name}</strong><small><MapPin size={14} /> {pharmacy.distance} away · {pharmacy.eta}</small></div>
-              <span className="rating"><Star size={14} fill="currentColor" /> {pharmacy.rating}</span>
-              {index === 0 && <b className="best-match">Best match</b>}
-            </article>
-          ))}
-        </div>
+        <div className="pharmacy-list"><article className="pharmacy-row"><span className="pharmacy-avatar"><ShieldCheck size={20} /></span><div><strong>Only approved live pharmacies are shown</strong><small><MapPin size={14} /> Search live stock to see the serving pharmacy and published customer location.</small></div><Link className="primary-link" href="/customer">Open live marketplace</Link></article></div>
       </section>
 
       <section className="how-section" id="how-it-works">
@@ -375,30 +269,6 @@ export default function Home() {
         </div>
       </footer>
 
-      {cartOpen && (
-        <div className="cart-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setCartOpen(false)}>
-          <aside className="cart-drawer" aria-label="Shopping cart">
-            <div className="drawer-header"><div><span className="section-kicker">YOUR ORDER</span><h2>Cart · {cart.length} items</h2></div><button onClick={() => setCartOpen(false)} type="button" aria-label="Close cart"><X size={20} /></button></div>
-            {orderPlaced ? (
-              <div className="order-success"><span><CheckCircle2 size={34} /></span><h3>Order placed successfully</h3><p>Order <strong>#UR1049</strong> has been sent to Sri Balaji Pharmacy for confirmation.</p><div><small>Estimated delivery</small><strong>35–45 minutes</strong></div><button onClick={() => { setOrderPlaced(false); setCartOpen(false); }} type="button">Track my order</button></div>
-            ) : (
-              <>
-                <div className="cart-items">
-                  {cartProducts.map((product, index) => (
-                    <article key={`${product.id}-${index}`}><span className={`cart-art ${product.tone}`}><Pill size={24} /></span><div><strong>{product.name}</strong><small>{product.pack}</small><span>{product.price}</span></div><div className="quantity-control"><button onClick={() => setCart((current) => { const copy = [...current]; copy.splice(index, 1); return copy; })} type="button"><Minus size={13} /></button><b>1</b><button onClick={() => setCart((current) => [...current, product.id])} type="button"><Plus size={13} /></button></div></article>
-                  ))}
-                </div>
-                {cartProducts.some((product) => product.rx) && <button className="prescription-upload" onClick={() => window.location.assign("/customer")} type="button"><span><Upload size={20} /></span><div><strong>Upload prescription securely</strong><small>Continue to the authenticated customer order screen</small></div><ArrowRight size={17} /></button>}
-                <div className="checkout-block"><h3>Delivery by</h3><div className="option-grid"><button className={delivery === "urmed" ? "selected" : ""} onClick={() => setDelivery("urmed")} type="button"><Truck size={19} /><span><strong>URMED delivery</strong><small>₹39 · 35–45 min</small></span>{delivery === "urmed" && <Check size={15} />}</button><button className={delivery === "pharmacy" ? "selected" : ""} onClick={() => setDelivery("pharmacy")} type="button"><Store size={19} /><span><strong>Pharmacy delivery</strong><small>₹25 · 45–60 min</small></span>{delivery === "pharmacy" && <Check size={15} />}</button></div></div>
-                <div className="checkout-block"><h3>Payment method</h3><div className="option-grid"><button className={payment === "online" ? "selected" : ""} onClick={() => setPayment("online")} type="button"><CreditCard size={19} /><span><strong>Pay online</strong><small>UPI, cards & net banking</small></span>{payment === "online" && <Check size={15} />}</button><button className={payment === "cod" ? "selected" : ""} onClick={() => setPayment("cod")} type="button"><Banknote size={19} /><span><strong>Cash on delivery</strong><small>Pay at your doorstep</small></span>{payment === "cod" && <Check size={15} />}</button></div></div>
-                <div className="bill-summary"><span>Medicine total <strong>₹{cartTotal.toFixed(2)}</strong></span><span>Delivery <strong>₹{delivery === "urmed" ? "39.00" : "25.00"}</strong></span><span className="bill-total">Amount payable <strong>₹{(cartTotal + (delivery === "urmed" ? 39 : 25)).toFixed(2)}</strong></span></div>
-                <button className="place-order" disabled={!cart.length} onClick={() => window.location.assign("/customer")} type="button">Continue to secure ordering <ShieldCheck size={18} /></button>
-                <p className="checkout-note">Prescription medicines are fulfilled only after pharmacist verification.</p>
-              </>
-            )}
-          </aside>
-        </div>
-      )}
     </main>
   );
 }

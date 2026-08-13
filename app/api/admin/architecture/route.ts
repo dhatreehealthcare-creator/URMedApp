@@ -19,11 +19,15 @@ type ArchitectureObject = { name: string; type: "table" | "view" | "trigger" };
 export async function GET(request: Request) {
   try {
     await requireAdminProfile(request);
-    const result = await getD1().prepare(`
+    const db = getD1();
+    const [result, preservedData] = await Promise.all([db.prepare(`
       SELECT name, type FROM sqlite_master
       WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite_%'
       ORDER BY type, name
-    `).all<{ name: string; type: "table" | "view" | "trigger" }>();
+    `).all<{ name: string; type: "table" | "view" | "trigger" }>(), db.prepare(`SELECT
+      (SELECT COUNT(*) FROM products) AS products,
+      (SELECT COUNT(*) FROM account_profiles WHERE role='customer' AND status='active'
+        AND email_verified=1 AND phone_verified=1) AS verifiedCustomers`).first()]);
     const records = result.results as ArchitectureObject[];
     const names = new Set(records.map((row) => row.name));
     const modules = groups.map(([name, objects]) => ({
@@ -42,8 +46,8 @@ export async function GET(request: Request) {
         modules: modules.length,
       },
       modules,
-      preservedData: { products: 100041, verifiedCustomers: 3, legacyPasswordsImported: false },
-      phase: "Database architecture complete — workflow connection in progress",
+      preservedData: { ...(preservedData ?? { products: 0, verifiedCustomers: 0 }), legacyPasswordsImported: false },
+      phase: "Live architecture and workflow readiness",
     }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return errorResponse(error);

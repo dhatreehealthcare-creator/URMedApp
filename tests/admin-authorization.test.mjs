@@ -51,6 +51,10 @@ class AuthDatabase {
 
 function installDatabase(role, status = "active") {
   globalThis.__URMED_D1__ = new AuthDatabase(role, status);
+  globalThis.__URMED_RUNTIME__ = {
+    APP_STAGE: "integration",
+    INTEGRATION_TEST_AUTH_SECRET: "unit-test-auth-secret-that-is-long-enough",
+  };
 }
 
 function authenticatedRequest(role, url = "https://urmed.example/api/admin/operations") {
@@ -63,6 +67,7 @@ async function expectAuthorizationFailure(promise, status) {
 
 test.after(() => {
   delete globalThis.__URMED_D1__;
+  delete globalThis.__URMED_RUNTIME__;
 });
 
 test("the shared admin contract accepts only an active admin profile", async () => {
@@ -90,8 +95,17 @@ test("every admin API route uses the shared authorization contract", () => {
   const routes = [
     ["../app/api/admin/architecture/route.ts", 1],
     ["../app/api/admin/operations/route.ts", 2],
+    ["../app/api/admin/registrations/route.ts", 1],
+    ["../app/api/admin/reports/expenses/route.ts", 1],
+    ["../app/api/admin/reports/home-delivery/route.ts", 1],
+    ["../app/api/admin/reports/sales/route.ts", 1],
+    ["../app/api/admin/reports/stock/route.ts", 1],
+    ["../app/api/admin/stores/map/route.ts", 1],
+    ["../app/api/admin/manufacturers/route.ts", 2],
+    ["../app/api/admin/product-alternates/route.ts", 2],
     ["../app/api/admin/recovery/route.ts", 1],
     ["../app/api/admin/reminders/process/route.ts", 1],
+    ["../app/api/admin/products/route.ts", 2],
     ["../app/api/admin/vendor-compliance/route.ts", 2],
   ];
   for (const [route, expectedChecks] of routes) {
@@ -107,6 +121,12 @@ test("every admin API route uses the shared authorization contract", () => {
 test("every admin UI request uses the authenticated request helper", () => {
   const components = [
     "../app/operations-centers.tsx",
+    "../app/admin-registration-list.tsx",
+    "../app/admin-operational-reports.tsx",
+    "../app/admin-store-map.tsx",
+    "../app/manufacturer-master.tsx",
+    "../app/product-alternates.tsx",
+    "../app/product-master.tsx",
     "../app/requirements-portal.tsx",
     "../app/vendor-compliance.tsx",
   ];
@@ -114,16 +134,29 @@ test("every admin UI request uses the authenticated request helper", () => {
   for (const component of components) {
     const source = readFileSync(new URL(component, import.meta.url), "utf8");
     for (const line of source.split("\n").filter((value) => value.includes("/api/admin/"))) {
-      assert.match(line, /authenticatedFetch\(/, `${component} has an unauthenticated admin request`);
       const endpoint = line.match(/\/api\/admin\/[a-z-/]+/)?.[0];
-      if (endpoint) endpoints.add(endpoint);
+      if (!endpoint) continue;
+      endpoints.add(endpoint);
+      const directlyRequested = /(?:authenticatedFetch|fetch)\(/.test(line);
+      const assignedToAuthenticatedEndpoint = /(?:const|let)\s+endpoint\s*=/.test(line)
+        && source.includes("authenticatedFetch(endpoint");
+      assert.ok(
+        directlyRequested ? line.includes("authenticatedFetch(") : assignedToAuthenticatedEndpoint,
+        `${component} has an admin endpoint without an authenticated request path`,
+      );
     }
   }
   assert.deepEqual([...endpoints].sort(), [
     "/api/admin/architecture",
+    "/api/admin/manufacturers",
     "/api/admin/operations",
+    "/api/admin/product-alternates",
+    "/api/admin/products",
     "/api/admin/recovery",
+    "/api/admin/registrations",
     "/api/admin/reminders/process",
+    "/api/admin/reports/",
+    "/api/admin/stores/map",
     "/api/admin/vendor-compliance",
   ]);
 });
@@ -136,6 +169,8 @@ test("the admin workspace is login-gated and public profile creation cannot crea
   assert.match(adminPage, /<ProtectedRoleRoute role="admin"/);
   assert.match(gate, /<AuthPanel role=\{role\} onProfileChange=\{updateProfile\}/);
   assert.match(gate, /authorized && \(role === "delivery"/);
-  assert.match(authPanel, /provisionedRole \? undefined/);
+  assert.match(authPanel, /allowProfileCreation && !provisionedRole/);
+  assert.match(authPanel, /useState<"register" \| "login">\(provisionedRole \? "login" : "register"\)/);
+  assert.match(authPanel, /\{!provisionedRole && <div className="auth-switch"/);
   assert.match(profileRoute, /new Set\(\["customer", "vendor"\]\)/);
 });

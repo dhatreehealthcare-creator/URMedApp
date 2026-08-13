@@ -1,6 +1,6 @@
 import { getD1 } from "../../../../db/d1";
 import { errorResponse, getLocalProfile } from "../../../../lib/auth-server";
-import { randomTestToken, sha256, TEST_TOKEN_PREFIX } from "../../../../lib/test-auth";
+import { randomTestToken, requireIntegrationTestRequest, sha256, TEST_TOKEN_PREFIX } from "../../../../lib/test-auth";
 
 type TestAccount = { id: number; authUserId: string; passwordSha256: string };
 
@@ -11,6 +11,7 @@ function bearer(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    await requireIntegrationTestRequest(request);
     const body = await request.json() as Record<string, unknown>;
     const email = String(body.email ?? "").trim().toLowerCase().slice(0, 180);
     const password = String(body.password ?? "").slice(0, 200);
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    await requireIntegrationTestRequest(request);
     const token = bearer(request);
     if (token.startsWith(TEST_TOKEN_PREFIX)) {
       await getD1().prepare("DELETE FROM test_sessions WHERE token_hash = ?").bind(await sha256(token)).run();

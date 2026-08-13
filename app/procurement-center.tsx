@@ -2,12 +2,12 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Building2, CheckCircle2, PackagePlus, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { purchaseStatusLabel, type StoredPurchaseStatus } from "../lib/purchase-status";
 import { authenticatedFetch } from "./marketplace-client";
+import { PurchaseLifecycleCenter } from "./purchase-lifecycle-center";
+import { SupplierDirectory, type SupplierRecord } from "./supplier-directory";
 
-type Supplier = { id: number; businessName: string; contactName: string; phone: string; email: string; address: string; gstNumber: string; drugLicenceNumber: string; status: string };
+type Supplier = SupplierRecord;
 type Manufacturer = { id: number; name: string; linkedProducts: number };
-type Purchase = { id: number; purchaseNumber: string; invoiceNumber: string; invoiceDate: string; subtotalPaise: number; taxPaise: number; totalPaise: number; paymentStatus: string; status: StoredPurchaseStatus; supplierName: string; lineCount: number };
 type Ledger = { id: number; accountCode: string; entryDate: string; description: string; debitPaise: number; creditPaise: number; referenceId: number };
 type CatalogProduct = { legacyId: number; name: string; composition: string; manufacturer: string; gstPercent: number };
 type PurchaseRow = { key: string; query: string; legacyId: number | null; batchNumber: string; expiryDate: string; manufacturingDate: string; dosage: string; purchasePrice: string; salePrice: string; mrp: string; quantity: string; freeQuantity: string; gstPercent: string };
@@ -35,7 +35,6 @@ function Notice({ error, message }: { error: string; message: string }) {
 export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
-  const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [ledger, setLedger] = useState<Ledger[]>([]);
   const [rows, setRows] = useState<PurchaseRow[]>([blankRow()]);
   const [activeRow, setActiveRow] = useState<string>("");
@@ -45,6 +44,8 @@ export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [supplierRefreshVersion, setSupplierRefreshVersion] = useState(0);
+  const [purchaseRefreshVersion, setPurchaseRefreshVersion] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -54,8 +55,8 @@ export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
       setSuppliers(masters.suppliers); setManufacturers(masters.manufacturers);
       if (mode === "purchase") {
         const purchaseResponse = await authenticatedFetch("/api/purchases", { cache: "no-store" });
-        const purchaseData = await payload<{ purchases: Purchase[]; ledger: Ledger[] }>(purchaseResponse);
-        setPurchases(purchaseData.purchases); setLedger(purchaseData.ledger);
+        const purchaseData = await payload<{ ledger: Ledger[] }>(purchaseResponse);
+        setLedger(purchaseData.ledger);
       }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Procurement data is unavailable"); }
     finally { setLoading(false); }
@@ -97,6 +98,7 @@ export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
       const response = await authenticatedFetch("/api/vendor/masters", { method: "POST", body: JSON.stringify({ action: "supplier", id: editingSupplier?.id, ...values }) });
       const data = await payload<{ suppliers: Supplier[]; manufacturers: Manufacturer[] }>(response);
       setSuppliers(data.suppliers); setManufacturers(data.manufacturers); setEditingSupplier(null); form.reset();
+      setSupplierRefreshVersion((current) => current + 1);
       setMessage("Supplier saved to this pharmacy.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Supplier could not be saved"); }
     finally { setBusy(""); }
@@ -108,7 +110,7 @@ export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
       const form = event.currentTarget; const values = Object.fromEntries(new FormData(form).entries());
       const response = await authenticatedFetch("/api/vendor/masters", { method: "POST", body: JSON.stringify({ action: "manufacturer", ...values }) });
       const data = await payload<{ suppliers: Supplier[]; manufacturers: Manufacturer[] }>(response);
-      setSuppliers(data.suppliers); setManufacturers(data.manufacturers); form.reset(); setMessage("Manufacturer master saved.");
+      setSuppliers(data.suppliers); setManufacturers(data.manufacturers); form.reset(); setMessage("Manufacturer submitted for administrator governance review.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Manufacturer could not be saved"); }
     finally { setBusy(""); }
   };
@@ -118,10 +120,11 @@ export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
     try {
       if (rows.some((row) => !row.legacyId)) throw new Error("Select a recovered medicine from the search results for every row");
       const values = Object.fromEntries(new FormData(form).entries());
-      const response = await authenticatedFetch("/api/purchases", { method: "POST", body: JSON.stringify({ ...values, items: rows }) });
-      const data = await payload<{ purchaseNumber: string; purchases: Purchase[]; ledger: Ledger[] }>(response);
-      setPurchases(data.purchases); setLedger(data.ledger); setRows([blankRow()]); setActiveRow(""); form.reset();
-      setMessage(`${data.purchaseNumber} received. Batch stock and the double-entry purchase ledger are updated.`);
+      const response = await authenticatedFetch("/api/purchases", { method: "POST", body: JSON.stringify({ ...values, workflow: "draft", items: rows }) });
+      const data = await payload<{ purchaseNumber: string; ledger: Ledger[] }>(response);
+      setLedger(data.ledger); setRows([blankRow()]); setActiveRow(""); form.reset();
+      setPurchaseRefreshVersion((current) => current + 1);
+      setMessage(`${data.purchaseNumber} created as a draft. Approve it before recording any goods receipt.`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Purchase receipt could not be saved"); }
     finally { setBusy(""); }
   };
@@ -138,26 +141,25 @@ export function ProcurementCenter({ mode }: { mode: "purchase" | "masters" }) {
         <label className="portal-field wide"><span>Address</span><textarea defaultValue={editingSupplier?.address} name="address" rows={2} /></label><label className="portal-field"><span>Status</span><select defaultValue={editingSupplier?.status ?? "active"} name="status"><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
         <div className="procurement-form-actions wide"><button className="portal-primary" disabled={Boolean(busy)} type="submit">{busy === "supplier" ? "Saving…" : editingSupplier ? "Update supplier" : "Add supplier"}</button>{editingSupplier && <button className="portal-outline" onClick={() => setEditingSupplier(null)} type="button">Cancel edit</button>}</div>
       </form>
-      <div className="master-list live-master-list">{suppliers.length ? suppliers.map((supplier) => <article key={supplier.id}><span>{supplier.businessName.slice(0, 2).toUpperCase()}</span><div><strong>{supplier.businessName}</strong><small>{supplier.contactName} · {supplier.phone}</small><em>{supplier.email || supplier.address || "No optional contact details"} · {supplier.status}</em></div><button onClick={() => setEditingSupplier(supplier)} type="button">Edit</button></article>) : <p className="procurement-empty">No suppliers yet. Add the first stockist above.</p>}</div>
     </section>
-    <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">MANUFACTURER MASTER</span><h2>Manufacturers</h2><p>One clean manufacturer master supports the shared product catalogue.</p></div><PackagePlus size={21} /></div>
-      <form className="portal-form-grid one" onSubmit={saveManufacturer}><label className="portal-field"><span>Business name *</span><input name="name" required /></label><button className="portal-secondary wide" disabled={Boolean(busy)} type="submit">{busy === "manufacturer" ? "Saving…" : "Add or update manufacturer"}</button></form>
+    <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">MANUFACTURER MASTER</span><h2>Manufacturers</h2><p>Products use canonical manufacturer IDs. New names require administrator governance approval.</p></div><PackagePlus size={21} /></div>
+      <form className="portal-form-grid one" onSubmit={saveManufacturer}><label className="portal-field"><span>Proposed business name *</span><input name="name" required /></label><button className="portal-secondary wide" disabled={Boolean(busy)} type="submit">{busy === "manufacturer" ? "Submitting…" : "Propose manufacturer"}</button></form>
       <div className="master-list live-master-list">{manufacturers.map((manufacturer) => <article key={manufacturer.id}><span>{manufacturer.name.slice(0, 2).toUpperCase()}</span><div><strong>{manufacturer.name}</strong><small>{Number(manufacturer.linkedProducts).toLocaleString("en-IN")} linked products</small></div></article>)}</div>
     </section>
-  </div></div>;
+  </div><SupplierDirectory onEdit={setEditingSupplier} refreshVersion={supplierRefreshVersion} /></div>;
 
   return <div className="portal-stack procurement-live"><Notice error={error} message={message} />
-    <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">LIVE PURCHASE & STOCK ENTRY</span><h2>Receive supplier invoice</h2><p>Receiving creates or increases each batch, records stock movements, and writes balanced ledger entries.</p></div><button className="portal-outline" onClick={() => setRows((current) => [...current, blankRow(crypto.randomUUID())])} type="button"><Plus size={15} /> Add product row</button></div>
+    <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">PURCHASE ORDER ENTRY</span><h2>Create supplier purchase order</h2><p>A draft records the supplier invoice and ordered quantities without changing physical stock or the accounting ledger.</p></div><button className="portal-outline" onClick={() => setRows((current) => [...current, blankRow(crypto.randomUUID())])} type="button"><Plus size={15} /> Add product row</button></div>
       <form onSubmit={savePurchase}><div className="portal-form-grid three"><label className="portal-field"><span>Stockist name *</span><select name="supplierId" required><option value="">Choose active supplier</option>{suppliers.filter((supplier) => supplier.status === "active").map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.businessName}</option>)}</select></label><label className="portal-field"><span>Supplier invoice number *</span><input name="invoiceNumber" required /></label><label className="portal-field"><span>Invoice date *</span><input defaultValue={new Date().toISOString().slice(0, 10)} name="invoiceDate" required type="date" /></label></div>
         <div className="portal-table-wrap"><div className="purchase-entry-table"><div className="purchase-entry-head"><span>Product</span><span>Batch</span><span>Expiry</span><span>Mfg.</span><span>Dosage</span><span>Purchase</span><span>Sale</span><span>MRP</span><span>Qty</span><span>Free</span><span>GST</span><span>Amount</span><span /></div>{rows.map((row) => {
           const taxable = Math.round((Number(row.purchasePrice) || 0) * 100) * (Number(row.quantity) || 0); const amount = taxable + Math.round(taxable * Number(row.gstPercent) / 100);
           return <div className="purchase-entry-row" key={row.key}><label><Search size={13} /><input aria-label="Product search" onChange={(event) => { const query = event.target.value; setActiveRow(row.key); if (query.trim().length < 2) setSearchResults([]); updateRow(row.key, { query, legacyId: null }); }} onFocus={() => setActiveRow(row.key)} placeholder="Search medicine" value={row.query} />{row.legacyId && <small>ID {row.legacyId}</small>}</label><input aria-label="Batch number" onChange={(event) => updateRow(row.key, { batchNumber: event.target.value })} required value={row.batchNumber} /><input aria-label="Expiry date" onChange={(event) => updateRow(row.key, { expiryDate: event.target.value })} required type="date" value={row.expiryDate} /><input aria-label="Manufacturing date" onChange={(event) => updateRow(row.key, { manufacturingDate: event.target.value })} type="date" value={row.manufacturingDate} /><input aria-label="Dosage" onChange={(event) => updateRow(row.key, { dosage: event.target.value })} placeholder="50 mg" value={row.dosage} /><input aria-label="Purchase price" min="0.01" onChange={(event) => updateRow(row.key, { purchasePrice: event.target.value })} required step="0.01" type="number" value={row.purchasePrice} /><input aria-label="Sale price" min="0.01" onChange={(event) => updateRow(row.key, { salePrice: event.target.value })} required step="0.01" type="number" value={row.salePrice} /><input aria-label="MRP" min="0.01" onChange={(event) => updateRow(row.key, { mrp: event.target.value })} required step="0.01" type="number" value={row.mrp} /><input aria-label="Quantity" min="1" onChange={(event) => updateRow(row.key, { quantity: event.target.value })} required type="number" value={row.quantity} /><input aria-label="Free quantity" min="0" onChange={(event) => updateRow(row.key, { freeQuantity: event.target.value })} type="number" value={row.freeQuantity} /><select aria-label="GST" onChange={(event) => updateRow(row.key, { gstPercent: event.target.value })} value={row.gstPercent}>{[0, 5, 12, 18, 28].map((rate) => <option key={rate} value={rate}>{rate}%</option>)}</select><strong>{money(amount)}</strong><button aria-label="Remove row" disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((candidate) => candidate.key !== row.key))} type="button"><Trash2 size={14} /></button></div>;
         })}</div></div>
         {activeQuery.length >= 2 && <div className="product-search-results"><span>Catalogue results</span>{searchResults.length ? searchResults.map((product) => <button key={product.legacyId} onClick={() => selectProduct(product)} type="button"><strong>{product.name}</strong><small>ID {product.legacyId} · {product.manufacturer || product.composition || "Manufacturer not recorded"}</small></button>) : <em>Searching the recovered catalogue…</em>}</div>}
-        <div className="purchase-footer"><div className="invoice-total horizontal"><span>Amount <strong>{money(totals.subtotal)}</strong></span><span>Tax <strong>{money(totals.tax)}</strong></span><span>Total amount <strong>{money(totals.total)}</strong></span></div><button className="portal-primary" disabled={Boolean(busy) || suppliers.filter((supplier) => supplier.status === "active").length === 0} type="submit">{busy === "purchase" ? "Receiving stock and ledger…" : "Receive purchase stock"}</button></div>
+        <div className="purchase-footer"><div className="invoice-total horizontal"><span>Amount <strong>{money(totals.subtotal)}</strong></span><span>Tax <strong>{money(totals.tax)}</strong></span><span>Total amount <strong>{money(totals.total)}</strong></span></div><button className="portal-primary" disabled={Boolean(busy) || suppliers.filter((supplier) => supplier.status === "active").length === 0} type="submit">{busy === "purchase" ? "Creating purchase order…" : "Create draft purchase order"}</button></div>
       </form>
     </section>
-    <div className="portal-split"><section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">PURCHASE HISTORY</span><h2>Received supplier invoices</h2></div><RefreshCw size={19} /></div><div className="portal-table-wrap"><table className="portal-table"><thead><tr><th>Purchase</th><th>Supplier</th><th>Invoice</th><th>Lines</th><th>Total</th><th>Status</th></tr></thead><tbody>{purchases.map((purchase) => <tr key={purchase.id}><td><strong>{purchase.purchaseNumber}</strong><small>{purchase.invoiceDate}</small></td><td>{purchase.supplierName}</td><td>{purchase.invoiceNumber}</td><td>{purchase.lineCount}</td><td><strong>{money(purchase.totalPaise)}</strong><small>Tax {money(purchase.taxPaise)}</small></td><td><span className="portal-status green">{purchaseStatusLabel(purchase.status)}</span><small>{purchase.paymentStatus}</small></td></tr>)}</tbody></table>{!purchases.length && <p className="procurement-empty">No supplier invoice has been received yet.</p>}</div></section>
-      <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">DOUBLE-ENTRY LEDGER</span><h2>Purchase accounts</h2></div></div><div className="ledger-list live-ledger-list">{ledger.map((entry) => <article key={entry.id}><span>{entry.entryDate}</span><div><strong>{entry.accountCode.replaceAll("_", " ")}</strong><small>{entry.description}</small></div><em>{entry.debitPaise ? `Dr ${money(entry.debitPaise)}` : `Cr ${money(entry.creditPaise)}`}</em></article>)}{!ledger.length && <p className="procurement-empty">Ledger entries appear after the first received purchase.</p>}</div></section></div>
+    <PurchaseLifecycleCenter refreshVersion={purchaseRefreshVersion} onChanged={() => void load()} />
+    <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">DOUBLE-ENTRY LEDGER</span><h2>Received purchase accounts</h2></div></div><div className="ledger-list live-ledger-list">{ledger.map((entry) => <article key={entry.id}><span>{entry.entryDate}</span><div><strong>{entry.accountCode.replaceAll("_", " ")}</strong><small>{entry.description}</small></div><em>{entry.debitPaise ? `Dr ${money(entry.debitPaise)}` : `Cr ${money(entry.creditPaise)}`}</em></article>)}{!ledger.length && <p className="procurement-empty">Ledger entries appear after the first goods receipt.</p>}</div></section>
   </div>;
 }

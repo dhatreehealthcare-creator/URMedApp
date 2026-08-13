@@ -239,6 +239,111 @@
       "when": 1786503229420,
       "tag": "0033_material_amazoness",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1786534542920,
+      "tag": "0034_little_sunfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1786545952130,
+      "tag": "0035_outstanding_krista_starr",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1786549539272,
+      "tag": "0036_low_prodigy",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1786550046947,
+      "tag": "0037_young_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1786550600237,
+      "tag": "0038_pale_shape",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1786551977592,
+      "tag": "0039_purchase_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1786552612361,
+      "tag": "0040_milky_grim_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1786553434361,
+      "tag": "0041_inventory_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1786553853198,
+      "tag": "0042_solid_hardball",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1786554338602,
+      "tag": "0043_tired_millenium_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1786559153453,
+      "tag": "0044_hot_the_anarchist",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1786561244589,
+      "tag": "0045_legal_human_torch",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1786570799807,
+      "tag": "0046_tearful_mauler",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1786572779346,
+      "tag": "0047_normal_wrecker",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1786581786911,
+      "tag": "0048_cool_gertrude_yorkes",
+      "breakpoints": true
     }
   ]
 }

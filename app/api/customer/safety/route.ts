@@ -5,6 +5,7 @@ import { sha256 } from "../../../../lib/test-auth";
 import { isStrictIsoDate } from "../../../../lib/date-controls";
 
 const purposes = new Set(["order_fulfilment", "prescription_processing", "health_reminders", "marketing"]);
+const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
 function dateValue(value: unknown, optional = false) {
   const text = String(value ?? "").trim();
@@ -31,7 +32,7 @@ export async function GET(request: Request) {
         reference_id AS referenceId,read_at AS readAt,created_at AS createdAt FROM notifications
         WHERE profile_id=? ORDER BY CASE WHEN read_at IS NULL THEN 0 ELSE 1 END,id DESC LIMIT 100`).bind(profile.id).all(),
     ]);
-    return Response.json({ reminders: reminders.results, consents: consents.results, notifications: notifications.results, policyVersion: "URMED-DPDP-2026.1" });
+    return Response.json({ reminders: reminders.results, consents: consents.results, notifications: notifications.results, policyVersion: "URMED-DPDP-2026.1" }, { headers: privateResponseHeaders });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -55,14 +56,14 @@ export async function POST(request: Request) {
         dosage_instructions, reminder_time, start_date, end_date, recurrence_rule, active)
         VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).bind(profile.id, medicineName, dosage, reminderTime, startDate, endDate, recurrenceRule).run();
       await appendAuditEvent({ actorProfileId: profile.id, action: "pill_reminder.created", entityType: "pill_reminder", entityId: Number(result.meta.last_row_id), after: { medicineName, reminderTime, startDate, endDate, recurrenceRule }, requestId: request.headers.get("cf-ray") ?? "" });
-      return Response.json({ created: true }, { status: 201 });
+      return Response.json({ created: true }, { status: 201, headers: privateResponseHeaders });
     }
     if (action === "toggle_reminder") {
       const id = Number(body.id); const active = body.active ? 1 : 0;
       const result = await db.prepare("UPDATE pill_reminders SET active = ? WHERE id = ? AND customer_profile_id = ?").bind(active, id, profile.id).run();
       if (!result.meta.changes) return Response.json({ error: "Reminder not found" }, { status: 404 });
       await appendAuditEvent({ actorProfileId: profile.id, action: active ? "pill_reminder.enabled" : "pill_reminder.disabled", entityType: "pill_reminder", entityId: id, after: { active: Boolean(active) }, requestId: request.headers.get("cf-ray") ?? "" });
-      return Response.json({ updated: true });
+      return Response.json({ updated: true }, { headers: privateResponseHeaders });
     }
     if (action === "consent") {
       const purpose = String(body.purpose ?? ""); const granted = Boolean(body.granted);
@@ -73,13 +74,13 @@ export async function POST(request: Request) {
         CASE WHEN ? THEN CURRENT_TIMESTAMP END, CASE WHEN ? THEN NULL ELSE CURRENT_TIMESTAMP END)`)
         .bind(profile.id, purpose, granted ? "granted" : "withdrawn", ipHash, granted ? 1 : 0, granted ? 1 : 0).run();
       await appendAuditEvent({ actorProfileId: profile.id, action: granted ? "consent.granted" : "consent.withdrawn", entityType: "data_consent", entityId: purpose, after: { purpose, granted, policyVersion: "URMED-DPDP-2026.1" }, requestId: request.headers.get("cf-ray") ?? "" });
-      return Response.json({ updated: true });
+      return Response.json({ updated: true }, { headers: privateResponseHeaders });
     }
     if(action==="read_notification"){
       const id=Number(body.id);if(!Number.isInteger(id))return Response.json({error:"Notification is invalid"},{status:400});
       const result=await db.prepare(`UPDATE notifications SET read_at=COALESCE(read_at,CURRENT_TIMESTAMP) WHERE id=? AND profile_id=?`).bind(id,profile.id).run();
       if(!result.meta.changes)return Response.json({error:"Notification not found"},{status:404});
-      return Response.json({updated:true});
+      return Response.json({updated:true}, { headers: privateResponseHeaders });
     }
     return Response.json({ error: "Safety action is invalid" }, { status: 400 });
   } catch (error) {

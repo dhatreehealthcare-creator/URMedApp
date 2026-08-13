@@ -82,12 +82,16 @@ test("authenticated vendor onboarding uses one four-step registration submission
   assert.match(component, /save\("registration"/);
   assert.match(route, /action === "registration"/);
   assert.match(route, /vendor\.registration\.submitted/);
+  assert.match(route, /registration_status='submitted'/);
+  assert.match(route, /!profile\.emailVerified/);
+  assert.match(route, /!profile\.phoneVerified/);
   assert.match(route, /approval_status=CASE WHEN approval_status='approved'/);
 });
 
 test("new vendor accounts remain drafts until the unified registration is submitted", () => {
   const profileRoute = readFileSync(new URL("../app/api/auth/profile/route.ts", import.meta.url), "utf8");
-  assert.match(profileRoute, /VALUES \(\?, \?, \?, \?, \?, 'draft', 'pending'\)/);
+  assert.match(profileRoute, /SELECT id, \?, \?, \?, \?, 'draft', 'pending' FROM account_profiles/);
   assert.doesNotMatch(profileRoute, /String\(body\.address/);
-  assert.match(profileRoute, /This email address is already registered/);
+  assert.match(profileRoute, /IdentityConflictError\(\["email"\]\)/);
+  assert.match(profileRoute, /ON CONFLICT\(profile_id\) DO NOTHING/);
 });

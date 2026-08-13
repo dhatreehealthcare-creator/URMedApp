@@ -5,12 +5,14 @@ import { requireVendorPermission } from "../../../../lib/vendor-access";
 import { releaseExpiredReservations } from "../../../../lib/inventory-reservations";
 import { completeSupplierReturn, listReturnablePurchases, PurchaseLifecycleError } from "../../../../lib/supplier-returns";
 
+const privateResponseHeaders = { "Cache-Control": "private, no-store" };
+
 export async function GET(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["vendor"]);
     const vendorId = profile.vendorId!; const db = getD1();
     await requireVendorPermission(request, "inventory.read");
-    const [summary, alerts, sales, inventory, returns, supplierReturns, returnablePurchases, temperatures, registers] = await Promise.all([
+    const [summary, alerts, sales, inventory, returns, supplierReturns, returnablePurchases, temperatures] = await Promise.all([
       db.prepare(`SELECT
         (SELECT COUNT(*) FROM pharmacy_inventory WHERE vendor_id = ? AND active = 1 AND quantity <= reorder_level) AS lowStock,
         (SELECT COUNT(*) FROM pharmacy_inventory WHERE vendor_id = ? AND active = 1 AND date(expiry_date) BETWEEN date('now') AND date('now','+90 day')) AS nearExpiry,
@@ -45,14 +47,10 @@ export async function GET(request: Request) {
         p.name AS productName, i.batch_number AS batchNumber FROM temperature_logs t
         LEFT JOIN pharmacy_inventory i ON i.id=t.inventory_id LEFT JOIN products p ON p.id=i.product_id
         WHERE t.vendor_id=? ORDER BY t.id DESC LIMIT 50`).bind(vendorId).all(),
-      db.prepare(`SELECT register_type AS registerType, serial_number AS serialNumber, transaction_date AS transactionDate,
-        patient_name AS patientName, prescriber_name AS prescriberName, batch_number AS batchNumber,
-        quantity_supplied AS quantitySupplied, retention_until AS retentionUntil FROM statutory_register_entries
-        WHERE vendor_id=? ORDER BY transaction_date DESC, id DESC LIMIT 100`).bind(vendorId).all(),
     ]);
     return Response.json({ summary, alerts: alerts.results, sales: sales.results, inventory: inventory.results,
       returns: returns.results, supplierReturns: supplierReturns.results, returnablePurchases,
-      temperatures: temperatures.results, registers: registers.results });
+      temperatures: temperatures.results }, { headers: privateResponseHeaders });
   } catch (error) { return errorResponse(error); }
 }
 
@@ -61,7 +59,7 @@ export async function POST(request: Request) {
     const { profile } = await requireLocalProfile(request, ["vendor"]); const vendorId = profile.vendorId!;
     const body = await request.json() as Record<string, unknown>; const action = String(body.action ?? ""); const db = getD1();
     await releaseExpiredReservations(db);
-    await requireVendorPermission(request, action === "supplier_return" ? "purchase.write" : ["offline_sale","return"].includes(action) ? "sale.write" : "inventory.write");
+    await requireVendorPermission(request, action === "supplier_return" ? "purchase.write" : action === "return" ? "sale.write" : "inventory.write");
     if (action === "temperature") {
       const inventoryId = Number(body.inventoryId); const temperature = Number(body.temperatureCelsius);
       const storageLocation = String(body.storageLocation ?? "").trim().slice(0, 120);
@@ -75,7 +73,7 @@ export async function POST(request: Request) {
         db.prepare(`UPDATE pharmacy_inventory SET quarantine_status=CASE WHEN ? THEN quarantine_status ELSE 'temperature_excursion' END, cold_chain_status=CASE WHEN ? THEN 'within_range' ELSE 'excursion' END, updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=?`).bind(withinRange ? 1 : 0, withinRange ? 1 : 0, inventoryId, vendorId),
       ]);
       await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "cold_chain.recorded", entityType: "inventory", entityId: inventoryId, after: { temperature, withinRange, actionText }, requestId: request.headers.get("cf-ray") ?? "" });
-      return Response.json({ recorded: true, withinRange, action: actionText });
+      return Response.json({ recorded: true, withinRange, action: actionText }, { headers: privateResponseHeaders });
     }
     if (action === "return") {
       const inventoryId=Number(body.inventoryId), sourceId=Number(body.sourceId), quantity=Number(body.quantity);
@@ -108,42 +106,7 @@ export async function POST(request: Request) {
       }
       const returnRow=await db.prepare(`SELECT id FROM sales_returns WHERE return_number=?`).bind(returnNumber).first<{id:number}>();
       await appendAuditEvent({vendorId,actorProfileId:profile.id,action:"sales_return.completed",entityType:"sales_return",entityId:returnRow!.id,after:{sourceType,sourceId,inventoryId,quantity,refund,disposition:saleable?"restocked":"quarantined"},requestId:request.headers.get("cf-ray")??""});
-      return Response.json({created:true,returnNumber,creditNote,refundPaise:refund,disposition:saleable?"restocked":"quarantined"},{status:201});
-    }
-    if (action === "offline_sale") {
-      const inventoryId=Number(body.inventoryId), quantity=Number(body.quantity); const customerName=String(body.customerName??"Walk-in customer").trim().slice(0,160)||"Walk-in customer";
-      const customerPhone=String(body.customerPhone??"").replace(/\D/g,"").slice(0,10), paymentMode=String(body.paymentMode??"cash").trim().slice(0,40);
-      if(!Number.isInteger(inventoryId)||!Number.isInteger(quantity)||quantity<1||!new Set(["cash","upi","card","credit"]).has(paymentMode)) return Response.json({error:"Counter-sale details are invalid"},{status:400});
-      if(customerPhone&&customerPhone.length!==10) return Response.json({error:"Customer phone must contain exactly 10 digits"},{status:400});
-      const item=await db.prepare(`SELECT i.id,i.product_id AS productId,i.batch_number AS batchNumber,i.expiry_date AS expiryDate,i.sale_price_paise AS unitPrice,i.gst_percent AS gstPercent,p.name AS productName,v.gst_number AS gstNumber
-        FROM pharmacy_inventory i JOIN products p ON p.id=i.product_id JOIN vendors v ON v.id=i.vendor_id WHERE i.id=? AND i.vendor_id=? AND i.active=1 AND p.active=1
-          AND v.approval_status='approved' AND v.compliance_status='verified' AND v.suspended_at IS NULL
-          AND i.quarantine_status='available' AND i.cold_chain_status IN ('not_applicable','within_range') AND date(i.expiry_date)>=date('now')
-          AND (i.quantity-i.reserved_quantity)>=? AND i.id=(SELECT first.id FROM pharmacy_inventory first WHERE first.vendor_id=i.vendor_id AND first.product_id=i.product_id AND first.active=1 AND first.quarantine_status='available' AND date(first.expiry_date)>=date('now') AND (first.quantity-first.reserved_quantity)>0 ORDER BY date(first.expiry_date),first.id LIMIT 1)`)
-        .bind(inventoryId,vendorId,quantity).first<{id:number;productId:number;batchNumber:string;expiryDate:string;unitPrice:number;gstPercent:number;productName:string;gstNumber:string}>();
-      if(!item)return Response.json({error:"Select the earliest-expiry eligible batch with sufficient stock"},{status:409});
-      const sellerStateCode=/^\d{2}/.test(item.gstNumber)?item.gstNumber.slice(0,2):"";
-      if(item.gstPercent>0&&!sellerStateCode)return Response.json({error:"Add a valid GSTIN before billing GST-rated stock"},{status:409});
-      const taxable=item.unitPrice*quantity,tax=Math.round(taxable*item.gstPercent/100),total=taxable+tax; const saleNumber=`POS-${Date.now()}-${crypto.randomUUID().slice(0,6)}`;
-      try {
-        const results=await db.batch([
-          db.prepare(`INSERT INTO offline_sales (sale_number,vendor_id,customer_name,customer_phone,subtotal_paise,tax_paise,discount_paise,total_paise,payment_mode,created_by_profile_id) VALUES (?,?,?,?,?,?,0,?,?,?)`).bind(saleNumber,vendorId,customerName,customerPhone,taxable,tax,total,paymentMode,profile.id),
-          db.prepare(`INSERT INTO offline_sale_items (offline_sale_id,inventory_id,product_id,batch_number,expiry_date,quantity,unit_price_paise,gst_percent,taxable_paise,tax_paise,line_total_paise) SELECT id,?,?,?,?,?,?,?,?,?,? FROM offline_sales WHERE sale_number=?`).bind(inventoryId,item.productId,item.batchNumber,item.expiryDate,quantity,item.unitPrice,item.gstPercent,taxable,tax,total,saleNumber),
-          db.prepare(`UPDATE pharmacy_inventory SET quantity=quantity-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=? AND active=1 AND quarantine_status='available' AND date(expiry_date)>=date('now') AND (quantity-reserved_quantity)>=?`).bind(quantity,inventoryId,vendorId,quantity),
-          db.prepare(`INSERT INTO stock_ledger (vendor_id,inventory_id,movement_type,quantity_delta,balance_after,reference_type,reference_id,reason,actor_profile_id) SELECT ?,?,'offline_sale',-?,i.quantity,'offline_sale',sale.id,'Counter sale',? FROM pharmacy_inventory i JOIN offline_sales sale ON sale.sale_number=? WHERE i.id=?`).bind(vendorId,inventoryId,quantity,profile.id,saleNumber,inventoryId),
-          db.prepare(`INSERT INTO tax_invoices (invoice_number,vendor_id,source_type,source_id,seller_gstin,buyer_gstin,place_of_supply_state_code,subtotal_paise,cgst_paise,sgst_paise,igst_paise,total_paise) SELECT 'GST-'||sale.sale_number,sale.vendor_id,'offline_sale',sale.id,v.gst_number,'',?,sale.subtotal_paise,CAST(sale.tax_paise/2 AS INTEGER),sale.tax_paise-CAST(sale.tax_paise/2 AS INTEGER),0,sale.total_paise FROM offline_sales sale JOIN vendors v ON v.id=sale.vendor_id WHERE sale.sale_number=?`).bind(sellerStateCode||"00",saleNumber),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id) SELECT vendor_id,'CASH_BANK',date('now'),'Counter receipt '||sale_number,total_paise,0,'offline_sale',id,? FROM offline_sales WHERE sale_number=?`).bind(profile.id,saleNumber),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id) SELECT vendor_id,'SALES',date('now'),'Counter sale '||sale_number,0,subtotal_paise,'offline_sale',id,? FROM offline_sales WHERE sale_number=?`).bind(profile.id,saleNumber),
-          db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id) SELECT vendor_id,'GST_PAYABLE',date('now'),'GST '||sale_number,0,tax_paise,'offline_sale',id,? FROM offline_sales WHERE sale_number=? AND tax_paise>0`).bind(profile.id,saleNumber),
-        ]);
-        if(!results[2]?.meta.changes)return Response.json({error:"Stock changed during billing. Refresh and retry"},{status:409});
-      } catch (error) {
-        if (/offline_sale_stock_invalid|stock_unavailable|fefo_violation/i.test(error instanceof Error ? error.message : "")) return Response.json({error:"Stock changed during billing. Refresh and retry"},{status:409});
-        throw error;
-      }
-      const sale=await db.prepare(`SELECT id FROM offline_sales WHERE sale_number=?`).bind(saleNumber).first<{id:number}>();
-      await appendAuditEvent({vendorId,actorProfileId:profile.id,action:"offline_sale.completed",entityType:"offline_sale",entityId:sale!.id,after:{saleNumber,inventoryId,quantity,taxable,tax,total,paymentMode},requestId:request.headers.get("cf-ray")??""});
-      return Response.json({created:true,saleNumber,totalPaise:total},{status:201});
+      return Response.json({created:true,returnNumber,creditNote,refundPaise:refund,disposition:saleable?"restocked":"quarantined"},{status:201,headers:privateResponseHeaders});
     }
     if (action === "supplier_return") {
       try {
@@ -156,7 +119,7 @@ export async function POST(request: Request) {
           reason: String(body.reason ?? ""),
           requestId: request.headers.get("cf-ray") ?? "",
         });
-        return Response.json(result, { status: 201 });
+        return Response.json(result, { status: 201, headers: privateResponseHeaders });
       } catch (error) {
         if (error instanceof PurchaseLifecycleError) return Response.json({ error: error.message }, { status: error.status });
         throw error;

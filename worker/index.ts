@@ -2,6 +2,10 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { runReservationRecovery } from "../lib/reservation-recovery.ts";
+import { processDueReminders, reminderProcessingWindow } from "../lib/reminder-processing.ts";
+import { REMINDER_PROCESSING_CRON, RESERVATION_RECOVERY_CRON, VENDOR_INVENTORY_ALERT_CRON } from "../lib/scheduled-job-config.ts";
+import { generateVendorInventoryAlerts } from "../lib/vendor-inventory-alerts.ts";
+import { withSecurityHeaders } from "../lib/security-headers.ts";
 
 interface Env {
   ASSETS: Fetcher;
@@ -16,6 +20,10 @@ interface Env {
   RAZORPAY_WEBHOOK_SECRET?: string;
   DATA_ENCRYPTION_KEY?: string;
   APP_STAGE?: string;
+  INTEGRATION_TEST_AUTH_SECRET?: string;
+  REMINDER_JOB_SECRET?: string;
+  EINVOICE_API_URL?: string;
+  EINVOICE_API_KEY?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -44,53 +52,102 @@ interface ScheduledController {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    (globalThis as typeof globalThis & { __URMED_D1__?: D1Database }).__URMED_D1__ = env.DB;
-    (globalThis as typeof globalThis & { __URMED_R2__?: R2Bucket }).__URMED_R2__ = env.BUCKET;
-    (globalThis as typeof globalThis & { __URMED_RUNTIME__?: Record<string, string | undefined> }).__URMED_RUNTIME__ = {
-      SUPABASE_URL: env.SUPABASE_URL,
-      SUPABASE_ANON_KEY: env.SUPABASE_ANON_KEY,
-      RESEND_API_KEY: env.RESEND_API_KEY,
-      RESEND_FROM_EMAIL: env.RESEND_FROM_EMAIL,
-      RAZORPAY_KEY_ID: env.RAZORPAY_KEY_ID,
-      RAZORPAY_KEY_SECRET: env.RAZORPAY_KEY_SECRET,
-      RAZORPAY_WEBHOOK_SECRET: env.RAZORPAY_WEBHOOK_SECRET,
-      DATA_ENCRYPTION_KEY: env.DATA_ENCRYPTION_KEY,
-      APP_STAGE: env.APP_STAGE,
-    };
+    installRuntimeBindings(env);
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      return handleImageOptimization(request, {
+      const response = await handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
           const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
       }, allowedWidths);
+      return withSecurityHeaders(request, response);
     }
 
-    return handler.fetch(request, env, ctx);
+    return withSecurityHeaders(request, await handler.fetch(request, env, ctx));
   },
   scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): void {
-    ctx.waitUntil(runReservationRecovery({
-      db: env.DB,
-      scheduledAt: controller.scheduledTime,
-    }).then((result) => {
-      console.info("Scheduled inventory reservation recovery completed", {
-        cron: controller.cron,
-        runKey: result.runKey,
-        batchesProcessed: result.batchesProcessed,
-        ordersReleased: result.ordersReleased,
-        reservationsReleased: result.reservationsReleased,
-        remainingExpiredOrders: result.remainingExpiredOrders,
-        duplicate: result.duplicate,
-      });
-    }).catch((error) => {
-      console.error("Scheduled inventory reservation recovery failed", error);
-      throw error;
-    }));
+    installRuntimeBindings(env);
+    if (controller.cron === RESERVATION_RECOVERY_CRON) {
+      ctx.waitUntil(runReservationRecovery({
+        db: env.DB,
+        scheduledAt: controller.scheduledTime,
+      }).then((result) => {
+        console.info("Scheduled inventory reservation recovery completed", {
+          cron: controller.cron,
+          runKey: result.runKey,
+          batchesProcessed: result.batchesProcessed,
+          ordersReleased: result.ordersReleased,
+          reservationsReleased: result.reservationsReleased,
+          remainingExpiredOrders: result.remainingExpiredOrders,
+          duplicate: result.duplicate,
+        });
+      }).catch((error) => {
+        console.error("Scheduled inventory reservation recovery failed", error);
+        throw error;
+      }));
+      return;
+    }
+    if (controller.cron === REMINDER_PROCESSING_CRON) {
+      ctx.waitUntil(processDueReminders({
+        db: env.DB,
+        now: controller.scheduledTime,
+        requestId: `cloudflare-scheduled:${controller.scheduledTime}`,
+      }).then((result) => {
+        console.info("Scheduled customer reminder processing completed", {
+          cron: controller.cron,
+          window: result.window,
+          processed: result.processed,
+          email: result.email,
+        });
+      }).catch((error) => {
+        console.error("Scheduled customer reminder processing failed", error);
+        throw error;
+      }));
+      return;
+    }
+    if (controller.cron === VENDOR_INVENTORY_ALERT_CRON) {
+      const processingDate = reminderProcessingWindow(controller.scheduledTime).localDate;
+      ctx.waitUntil(generateVendorInventoryAlerts({
+        db: env.DB,
+        processingDate,
+      }).then((result) => {
+        console.info("Scheduled vendor inventory alert processing completed", {
+          cron: controller.cron,
+          processingDate: result.processingDate,
+          generated: result.generated,
+        });
+      }).catch((error) => {
+        console.error("Scheduled vendor inventory alert processing failed", error);
+        throw error;
+      }));
+      return;
+    }
+    console.warn("Ignored unknown scheduled event", { cron: controller.cron });
   },
 };
+
+function installRuntimeBindings(env: Env) {
+  (globalThis as typeof globalThis & { __URMED_D1__?: D1Database }).__URMED_D1__ = env.DB;
+  (globalThis as typeof globalThis & { __URMED_R2__?: R2Bucket }).__URMED_R2__ = env.BUCKET;
+  (globalThis as typeof globalThis & { __URMED_RUNTIME__?: Record<string, string | undefined> }).__URMED_RUNTIME__ = {
+    SUPABASE_URL: env.SUPABASE_URL,
+    SUPABASE_ANON_KEY: env.SUPABASE_ANON_KEY,
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    RESEND_FROM_EMAIL: env.RESEND_FROM_EMAIL,
+    RAZORPAY_KEY_ID: env.RAZORPAY_KEY_ID,
+    RAZORPAY_KEY_SECRET: env.RAZORPAY_KEY_SECRET,
+    RAZORPAY_WEBHOOK_SECRET: env.RAZORPAY_WEBHOOK_SECRET,
+    DATA_ENCRYPTION_KEY: env.DATA_ENCRYPTION_KEY,
+    APP_STAGE: env.APP_STAGE,
+    INTEGRATION_TEST_AUTH_SECRET: env.INTEGRATION_TEST_AUTH_SECRET,
+    REMINDER_JOB_SECRET: env.REMINDER_JOB_SECRET,
+    EINVOICE_API_URL: env.EINVOICE_API_URL,
+    EINVOICE_API_KEY: env.EINVOICE_API_KEY,
+  };
+}
 
 export default worker;

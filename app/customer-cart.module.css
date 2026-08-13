@@ -1,0 +1,38 @@
+.cartCount {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border-radius: 999px;
+  background: #eaf7f3;
+  color: #087c6c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.groups { display: grid; gap: 12px; margin: 18px 0; }
+.group { overflow: hidden; border: 1px solid #dfe9e6; border-radius: 16px; background: #fff; }
+.group.selected { border-color: #087c6c; box-shadow: 0 0 0 2px rgba(8,124,108,.08); }
+.group header, .group footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 15px; background: #f7faf9; }
+.group header span { display: grid; gap: 3px; }
+.group header strong { font-size: 13px; }
+.group header small, .line small, .empty small, .checkoutNotice small { color: #637772; font-size: 10px; line-height: 1.5; }
+.group header button { border: 0; border-radius: 9px; padding: 8px 10px; background: #087c6c; color: white; font-size: 10px; font-weight: 800; cursor: pointer; }
+.line { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 12px 15px; border-top: 1px solid #edf2f0; }
+.line > span { display: grid; gap: 3px; }
+.line strong { font-size: 12px; }
+.quantity { display: flex; align-items: center; gap: 5px; }
+.quantity button { width: 29px; height: 29px; display: grid; place-items: center; border: 1px solid #dce8e5; border-radius: 8px; background: white; color: #087c6c; cursor: pointer; }
+.quantity input { width: 52px; height: 30px; border: 1px solid #dce8e5; border-radius: 8px; text-align: center; font: inherit; font-size: 11px; }
+.quantity .remove { color: #b43c46; }
+.group footer { border-top: 1px solid #edf2f0; font-size: 11px; }
+.group footer strong { color: #087c6c; font-size: 13px; }
+.empty, .checkoutNotice { display: flex; align-items: flex-start; gap: 10px; padding: 15px; border: 1px dashed #cddbd7; border-radius: 14px; color: #087c6c; background: #f9fbfa; }
+.empty span, .checkoutNotice span { display: grid; gap: 3px; }
+.empty strong, .checkoutNotice strong { color: #153f38; font-size: 12px; }
+
+@media (max-width: 640px) {
+  .group header, .line { align-items: stretch; grid-template-columns: 1fr; }
+  .group header { flex-direction: column; align-items: stretch; }
+  .quantity { justify-content: flex-end; }
+}

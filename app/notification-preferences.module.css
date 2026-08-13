@@ -1,0 +1,13 @@
+.panel { display: grid; gap: 14px; }
+.intro { color: #5f716c; font-size: 13px; margin: 0; }
+.grid { display: grid; gap: 10px; }
+.row { align-items: center; border: 1px solid #dfe9e5; border-radius: 13px; display: grid; gap: 12px; grid-template-columns: minmax(150px, 1fr) repeat(3, auto) minmax(170px, auto); padding: 12px; }
+.row strong { color: #173d36; display: block; font-size: 13px; text-transform: capitalize; }
+.row small { color: #687a75; display: block; font-size: 11px; margin-top: 3px; }
+.channel { align-items: center; color: #385e57; display: flex; font-size: 12px; gap: 6px; }
+.zone { border: 1px solid #cfded9; border-radius: 8px; min-height: 34px; padding: 5px 8px; }
+.save { background: #24584f; border: 0; border-radius: 8px; color: #fff; cursor: pointer; min-height: 34px; padding: 6px 10px; }
+.save:disabled { cursor: not-allowed; opacity: .5; }
+.notice { color: #916517; font-size: 12px; margin: 0; }
+.error { color: #b42318; font-size: 12px; margin: 0; }
+@media (max-width: 780px) { .row { grid-template-columns: 1fr 1fr; } .row > div:first-child { grid-column: 1 / -1; } }

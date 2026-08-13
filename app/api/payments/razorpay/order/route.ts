@@ -36,8 +36,11 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({ amount: order.totalPaise, currency: "INR", receipt: order.orderNumber, notes: { urmed_order_id: String(order.id) } }),
     });
-    const payload = await response.json() as { id?: string; error?: { description?: string } };
+    const payload = await response.json() as { id?: string; amount?: number; currency?: string; receipt?: string; error?: { description?: string } };
     if (!response.ok || !payload.id) return Response.json({ error: payload.error?.description || "Razorpay could not create the payment" }, { status: 502 });
+    if (payload.amount !== order.totalPaise || payload.currency !== "INR" || payload.receipt !== order.orderNumber) {
+      return Response.json({ error: "Razorpay returned an inconsistent payment order" }, { status: 502 });
+    }
     await db.prepare("UPDATE orders SET razorpay_order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(payload.id, order.id).run();
     return Response.json({ id: payload.id, amount: order.totalPaise, currency: "INR", keyId });
   } catch (error) {

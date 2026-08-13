@@ -18,7 +18,11 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
 }
 
-export async function appendAuditEvent(input: AuditInput, database?: D1Database) {
+async function buildAuditEventStatement(
+  input: AuditInput,
+  database?: D1Database,
+  options?: { whenPreviousStatementChanged?: boolean },
+) {
   const db = database ?? getD1();
   const vendorId = input.vendorId ?? null;
   const previous = await db.prepare(`
@@ -43,13 +47,28 @@ export async function appendAuditEvent(input: AuditInput, database?: D1Database)
     previousHash,
     createdAt,
   }));
-  await db.prepare(`
+  const statement = db.prepare(`
     INSERT INTO audit_events (vendor_id, actor_profile_id, action, entity_type, entity_id,
       before_json, after_json, reason, request_id, previous_event_hash, event_hash, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ${options?.whenPreviousStatementChanged ? "WHERE changes() = 1" : ""}
   `).bind(
     vendorId, input.actorProfileId ?? null, input.action, input.entityType, String(input.entityId),
     beforeJson, afterJson, input.reason ?? "", input.requestId ?? "", previousHash, eventHash, createdAt,
-  ).run();
+  );
+  return { statement, eventHash };
+}
+
+export async function prepareAuditEventStatement(
+  input: AuditInput,
+  database?: D1Database,
+  options?: { whenPreviousStatementChanged?: boolean },
+) {
+  return (await buildAuditEventStatement(input, database, options)).statement;
+}
+
+export async function appendAuditEvent(input: AuditInput, database?: D1Database) {
+  const { statement, eventHash } = await buildAuditEventStatement(input, database);
+  await statement.run();
   return eventHash;
 }

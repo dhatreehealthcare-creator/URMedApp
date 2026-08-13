@@ -2,6 +2,7 @@ import { getD1 } from "../../../../db/d1";
 import { appendAuditEvent } from "../../../../lib/audit";
 import { errorResponse } from "../../../../lib/auth-server";
 import { requireVendorPermission } from "../../../../lib/vendor-access";
+import { parseManufacturerProposal } from "../../../../lib/manufacturer-governance";
 
 function clean(value: unknown, maximum: number) {
   return String(value ?? "").trim().slice(0, maximum);
@@ -23,10 +24,15 @@ async function loadMasters(vendorId: number, query = "") {
     `).bind(vendorId),
     db.prepare(`
       SELECT m.id, m.name, COUNT(p.id) AS linkedProducts
-      FROM manufacturers m LEFT JOIN products p ON lower(p.manufacturer) = m.normalized_name
-      WHERE (? = '' OR m.normalized_name LIKE ?)
+      FROM manufacturers m
+      JOIN manufacturer_canonical_state state ON state.manufacturer_id = m.id AND state.status = 'active'
+      LEFT JOIN products p ON p.manufacturer_id = m.id
+      WHERE (? = '' OR m.normalized_name LIKE ? OR EXISTS (
+        SELECT 1 FROM manufacturer_aliases alias
+        WHERE alias.manufacturer_id = m.id AND alias.normalized_alias LIKE ?
+      ))
       GROUP BY m.id, m.name ORDER BY linkedProducts DESC, m.name LIMIT 100
-    `).bind(manufacturerQuery, `%${manufacturerQuery}%`),
+    `).bind(manufacturerQuery, `%${manufacturerQuery}%`, `%${manufacturerQuery}%`),
   ]);
   return { suppliers: suppliers.results, manufacturers: manufacturers.results };
 }
@@ -80,12 +86,15 @@ export async function POST(request: Request) {
       }
       await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: id > 0 ? "supplier.updated" : "supplier.created", entityType: "supplier", entityId: id || businessName, before, after: { businessName, contactName, phone, email, address, gstNumber, drugLicenceNumber, status }, requestId: request.headers.get("cf-ray") ?? "" });
     } else if (action === "manufacturer") {
-      const name = clean(body.name, 180);
-      const normalized = normalizedName(name);
-      if (!name || normalized.length < 2) return Response.json({ error: "Manufacturer business name is required" }, { status: 400 });
-      await db.prepare(`INSERT INTO manufacturers (name, normalized_name) VALUES (?, ?)
-        ON CONFLICT(normalized_name) DO UPDATE SET name = excluded.name`).bind(name, normalized).run();
-      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "manufacturer.saved", entityType: "manufacturer", entityId: normalized, after: { name }, requestId: request.headers.get("cf-ray") ?? "" });
+      const proposal = parseManufacturerProposal({ requestType: "new", proposedName: body.name });
+      const inserted = await db.prepare(`INSERT INTO manufacturer_change_requests (
+        request_type, submitted_vendor_id, created_by_profile_id, proposed_name, normalized_proposed_name
+      ) SELECT 'new', ?, ?, ?, ? WHERE NOT EXISTS (
+        SELECT 1 FROM manufacturers WHERE normalized_name=?
+      ) AND NOT EXISTS (SELECT 1 FROM manufacturer_aliases WHERE normalized_alias=?) RETURNING id`)
+        .bind(vendorId, profile.id, proposal.proposedName, proposal.normalizedProposedName, proposal.normalizedProposedName, proposal.normalizedProposedName).first<{ id: number }>();
+      if (!inserted) return Response.json({ error: "This manufacturer already exists; select the canonical record" }, { status: 409 });
+      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "manufacturer.new.proposed", entityType: "manufacturer_change_request", entityId: inserted.id, after: { ...proposal, status: "pending" }, requestId: request.headers.get("cf-ray") ?? "" });
     } else {
       return Response.json({ error: "Master action is invalid" }, { status: 400 });
     }

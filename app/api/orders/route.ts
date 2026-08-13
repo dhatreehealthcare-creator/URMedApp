@@ -4,9 +4,14 @@ import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
 import { asPositiveInteger, orderNumber } from "../../../lib/money";
 import { allocateFefo, calculateGst } from "../../../lib/order-controls";
 import { nextDeliveryStatuses, type DeliveryMethod, type WorkflowRole } from "../../../lib/order-workflow";
-import { sendTransactionalEmail } from "../../../lib/resend";
+import { prepareTransactionalEmailEnqueueStatement } from "../../../lib/transactional-email-outbox";
 import { haversineKm, isValidGeoPoint } from "../../../lib/geo";
 import { prepareOnlineOrderReservation, releaseExpiredReservations, reservationExpiresAt } from "../../../lib/inventory-reservations";
+import { normalizeIndianMobile } from "../../../lib/identity-verification";
+import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
+import { requireVendorPermission } from "../../../lib/vendor-access";
+
+const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
 type OrderItemInput = { inventoryId?: unknown; quantity?: unknown };
 type SelectedOffer = {
@@ -27,18 +32,22 @@ type OrderListRow = {
   placeOfSupplyStateCode: string; inventoryStatus: string; reservationExpiresAt: string | null;
   createdAt: string; businessName: string; items: string;
 };
-type TrackingEventRow = { orderId: number; status: string; note: string; latitude: string; longitude: string; createdAt: string; actorName: string; actorRole: string };
+type TrackingEventRow = { orderId: number; status: string; note: string; createdAt: string; actorName: string; actorRole: string };
 
 export async function GET(request: Request) {
   try {
-    const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
+    const authenticated = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
+    const { profile } = authenticated;
+    const vendorAccess = profile.role === "vendor"
+      ? await requireVendorPermission(request, "sale.write", authenticated)
+      : null;
     const db = getD1();
     await releaseExpiredReservations(db);
     let clause = "o.customer_profile_id = ?";
     let ownerId: number | string | null = profile.id;
     if (profile.role === "vendor") {
       clause = "o.vendor_id = ?";
-      ownerId = profile.vendorId;
+      ownerId = vendorAccess!.vendorId;
     } else if (profile.role === "admin") {
       clause = "1 = ?";
       ownerId = 1;
@@ -50,7 +59,7 @@ export async function GET(request: Request) {
       )`;
       ownerId = profile.id;
     }
-    if (!ownerId) return Response.json({ orders: [] });
+    if (!ownerId) return Response.json({ orders: [] }, { headers: privateResponseHeaders });
     const orderResult = await db.prepare(`
       SELECT o.id, o.order_number AS orderNumber, o.subtotal_paise AS subtotalPaise,
         o.tax_paise AS taxPaise, o.delivery_fee_paise AS deliveryFeePaise, o.total_paise AS totalPaise,
@@ -67,7 +76,7 @@ export async function GET(request: Request) {
       WHERE ${clause} ORDER BY o.created_at DESC LIMIT 100
     `).bind(ownerId).all<OrderListRow>();
     const eventResult = await db.prepare(`
-      SELECT e.order_id AS orderId, e.status, e.note, e.latitude, e.longitude, e.created_at AS createdAt,
+      SELECT e.order_id AS orderId, e.status, e.note, e.created_at AS createdAt,
         COALESCE(actor.name, 'URMED system') AS actorName, COALESCE(actor.role, 'system') AS actorRole
       FROM delivery_events e JOIN orders o ON o.id = e.order_id
       LEFT JOIN account_profiles actor ON actor.id = e.actor_profile_id
@@ -84,7 +93,7 @@ export async function GET(request: Request) {
         paymentMethod: order.paymentMethod, paymentStatus: order.paymentStatus,
       }),
     }));
-    return Response.json({ orders });
+    return Response.json({ orders }, { headers: privateResponseHeaders });
   } catch (error) {
     return errorResponse(error);
   }
@@ -100,6 +109,14 @@ export async function POST(request: Request) {
     const deliveryMethod = ["pickup", "pharmacy", "urmed"].includes(String(body.deliveryMethod)) ? String(body.deliveryMethod) : "urmed";
     const placeOfSupplyStateCode = String(body.placeOfSupplyStateCode ?? "").trim();
     if (!/^\d{2}$/.test(placeOfSupplyStateCode)) return Response.json({ error: "Enter the 2-digit GST state code for the delivery place" }, { status: 400 });
+    const customerName = profile.name.trim().slice(0, 120);
+    const customerPhone = normalizeIndianMobile(profile.phone);
+    if (!customerName || !customerPhone) return Response.json({ error: "A verified customer name and mobile number are required before checkout" }, { status: 409 });
+    if (body.customerPhone !== undefined && normalizeIndianMobile(body.customerPhone) !== customerPhone) {
+      return Response.json({ error: "Change and re-verify the mobile number in your customer account before checkout" }, { status: 409 });
+    }
+    const customerAddressId = Number(body.customerAddressId);
+    if (!Number.isInteger(customerAddressId) || customerAddressId < 1) return Response.json({ error: "Select a saved delivery address" }, { status: 400 });
 
     const requestedByInventory = new Map<number, number>();
     for (const item of items) {
@@ -111,6 +128,12 @@ export async function POST(request: Request) {
 
     const db = getD1();
     await releaseExpiredReservations(db);
+    const operationalVendor = currentOperationalVendorPredicate("v");
+    const customerAddress = await db.prepare(`SELECT id,address,latitude,longitude FROM customer_addresses
+      WHERE id=? AND profile_id=? LIMIT 1`).bind(customerAddressId, profile.id).first<{
+      id: number; address: string; latitude: string; longitude: string;
+    }>();
+    if (!customerAddress) return Response.json({ error: "The selected delivery address does not belong to this customer" }, { status: 404 });
     const selected: Array<SelectedOffer & { requestedQuantity: number }> = [];
     for (const [inventoryId, requestedQuantity] of requestedByInventory) {
       const row = await db.prepare(`
@@ -118,8 +141,7 @@ export async function POST(request: Request) {
           p.name AS productName, p.prescription_required AS prescriptionRequired
         FROM pharmacy_inventory i JOIN products p ON p.id = i.product_id
         JOIN vendors v ON v.id = i.vendor_id
-        WHERE i.id = ? AND p.active = 1 AND v.approval_status = 'approved'
-          AND v.compliance_status = 'verified' AND v.suspended_at IS NULL LIMIT 1
+        WHERE i.id = ? AND p.active = 1 AND ${operationalVendor} LIMIT 1
       `).bind(inventoryId).first<SelectedOffer>();
       if (!row) return Response.json({ error: "A selected medicine is no longer available" }, { status: 409 });
       selected.push({ ...row, requestedQuantity });
@@ -151,9 +173,19 @@ export async function POST(request: Request) {
       }
     }
 
-    const vendor = await db.prepare(`SELECT gst_number AS gstNumber, latitude, longitude,
-      delivery_radius_km AS deliveryRadiusKm, home_delivery AS homeDelivery FROM vendors WHERE id = ? LIMIT 1`)
-      .bind(vendorId).first<{ gstNumber: string; latitude: string; longitude: string; deliveryRadiusKm: number; homeDelivery: number }>();
+    const vendor = await db.prepare(`SELECT v.gst_number AS gstNumber, v.home_delivery AS homeDelivery,
+      public_location.latitude AS publicLatitude, public_location.longitude AS publicLongitude,
+      public_location.pickup_enabled AS publicPickupEnabled,
+      public_location.service_enabled AS publicServiceEnabled,
+      public_location.service_radius_km AS publicServiceRadiusKm
+      FROM vendors v LEFT JOIN vendor_public_locations public_location
+        ON public_location.vendor_id = v.id AND public_location.publication_status = 'published'
+      WHERE v.id = ? AND ${operationalVendor} LIMIT 1`)
+      .bind(vendorId).first<{
+        gstNumber: string; homeDelivery: number;
+        publicLatitude: string | null; publicLongitude: string | null; publicPickupEnabled: number | null;
+        publicServiceEnabled: number | null; publicServiceRadiusKm: number | null;
+      }>();
     if (!vendor) return Response.json({ error: "The selected pharmacy is unavailable" }, { status: 409 });
     const sellerStateCode = /^\d{2}/.test(vendor.gstNumber) ? vendor.gstNumber.slice(0, 2) : "";
 
@@ -205,22 +237,29 @@ export async function POST(request: Request) {
     const taxPaise = allocatedLines.reduce((sum, line) => sum + line.taxPaise, 0);
     const deliveryFeePaise = deliveryMethod === "pickup" ? 0 : deliveryMethod === "pharmacy" ? 2500 : 3900;
     const totalPaise = subtotalPaise + taxPaise + deliveryFeePaise;
-    const customerName = String(body.customerName ?? profile.name).trim().slice(0, 120);
-    const customerPhone = String(body.customerPhone ?? profile.phone).replace(/\D/g, "").slice(-10);
-    const deliveryAddress = String(body.deliveryAddress ?? "").trim().slice(0, 600);
-    const latitude = String(body.latitude ?? "").trim().slice(0, 40);
-    const longitude = String(body.longitude ?? "").trim().slice(0, 40);
-    if (!customerName || !/^\d{10}$/.test(customerPhone) || !deliveryAddress) return Response.json({ error: "Customer name, 10-digit phone and delivery address are required" }, { status: 400 });
+    const deliveryAddress = customerAddress.address;
+    const latitude = customerAddress.latitude;
+    const longitude = customerAddress.longitude;
     const lat = Number(latitude); const lon = Number(longitude);
     if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) return Response.json({ error: "Valid delivery latitude and longitude are required" }, { status: 400 });
-    const pharmacyPoint = { latitude: Number(vendor.latitude), longitude: Number(vendor.longitude) };
+    const publicServicePoint = {
+      latitude: Number(vendor.publicLatitude),
+      longitude: Number(vendor.publicLongitude),
+    };
+    const hasPublishedServicePoint = isValidGeoPoint(publicServicePoint);
+    if (deliveryMethod === "pickup" && (!vendor.publicPickupEnabled || !hasPublishedServicePoint)) {
+      return Response.json({ error: "Pickup is unavailable until this pharmacy publishes a customer pickup point" }, { status: 409 });
+    }
+    if (deliveryMethod !== "pickup" && (!vendor.publicServiceEnabled || !hasPublishedServicePoint)) {
+      return Response.json({ error: "Delivery is unavailable until this pharmacy publishes a customer service point" }, { status: 409 });
+    }
+    const serviceRadiusKm = Number(vendor.publicServiceRadiusKm);
     let deliveryDistanceKm = 0;
     if (deliveryMethod !== "pickup") {
-      if (!isValidGeoPoint(pharmacyPoint)) return Response.json({ error: "This pharmacy must verify its map location before accepting delivery orders" }, { status: 409 });
       if (deliveryMethod === "pharmacy" && !vendor.homeDelivery) return Response.json({ error: "This pharmacy does not currently offer self-delivery" }, { status: 409 });
-      deliveryDistanceKm = haversineKm(pharmacyPoint, { latitude: lat, longitude: lon });
-      if (deliveryDistanceKm > vendor.deliveryRadiusKm) {
-        return Response.json({ error: `Delivery address is ${deliveryDistanceKm.toFixed(1)} km away and outside this pharmacy's ${vendor.deliveryRadiusKm} km service area` }, { status: 409 });
+      deliveryDistanceKm = haversineKm(publicServicePoint, { latitude: lat, longitude: lon });
+      if (deliveryDistanceKm > serviceRadiusKm) {
+        return Response.json({ error: "This delivery address is outside the pharmacy service area. Choose pickup or another pharmacy." }, { status: 409 });
       }
     }
 
@@ -231,13 +270,21 @@ export async function POST(request: Request) {
         delivery_fee_paise, total_paise, payment_method, payment_status, delivery_method, order_status,
         delivery_status, prescription_status, place_of_supply_state_code, customer_name, customer_phone,
         delivery_address, latitude, longitude, inventory_status, reservation_expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM vendors checkout_vendor
+        WHERE checkout_vendor.id = ? AND ${currentOperationalVendorPredicate("checkout_vendor")}
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM prescriptions eligible_prescription
+          WHERE eligible_prescription.id=? AND eligible_prescription.customer_profile_id=?
+            AND eligible_prescription.vendor_id=? AND eligible_prescription.status IN ('uploaded','approved')
+            AND NOT EXISTS (SELECT 1 FROM orders used_order
+              WHERE used_order.prescription_id=eligible_prescription.id)))`)
         .bind(number, profile.id, vendorId, prescriptionId, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise,
           paymentMethod, paymentMethod === "cod" ? "cod_due" : "pending", deliveryMethod,
           prescriptionStatus === "pending_review" ? "awaiting_prescription_review" : paymentMethod === "online" ? "awaiting_payment" : "placed",
           prescriptionStatus === "pending_review" ? "pharmacist_review" : "awaiting_confirmation", prescriptionStatus,
           placeOfSupplyStateCode, customerName, customerPhone, deliveryAddress, latitude, longitude,
-          paymentMethod === "online" ? "reserved" : "committed", reservationExpiry),
+          paymentMethod === "online" ? "reserved" : "committed", reservationExpiry,
+          vendorId, prescriptionId, prescriptionId, profile.id, vendorId),
       ...allocatedLines.flatMap((line) => {
         const lineStatements = [db.prepare(`INSERT INTO order_items (order_id, inventory_id, product_id, product_name,
           batch_number, quantity, unit_price_paise, gst_percent, hsn_code, expiry_date, taxable_paise, cgst_paise,
@@ -257,7 +304,9 @@ export async function POST(request: Request) {
             db.prepare(`UPDATE pharmacy_inventory SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP
           WHERE id = ? AND active = 1 AND quarantine_status = 'available'
             AND expiry_date IS NOT NULL AND date(expiry_date) >= date('now')
-            AND (quantity - reserved_quantity) >= ?`).bind(line.allocatedQuantity, line.inventoryId, line.allocatedQuantity),
+            AND (quantity - reserved_quantity) >= ?
+            AND EXISTS (SELECT 1 FROM orders placed_order WHERE placed_order.order_number=?)`)
+              .bind(line.allocatedQuantity, line.inventoryId, line.allocatedQuantity, number),
             db.prepare(`INSERT INTO stock_ledger (vendor_id, inventory_id, movement_type, quantity_delta, balance_after,
           reference_type, reference_id, reason, actor_profile_id)
           SELECT i.vendor_id, i.id, 'online_sale', ?, i.quantity, 'order', o.id, 'Atomic FEFO allocation', o.customer_profile_id
@@ -272,11 +321,19 @@ export async function POST(request: Request) {
         .bind(prescriptionStatus === "pending_review" ? "pharmacist_review" : "placed", profile.id,
           prescriptionStatus === "pending_review" ? "Prescription received and awaiting pharmacist review" : "Order received by URMED", number),
     ];
+    statements.push(prepareTransactionalEmailEnqueueStatement(db, {
+      profileId: profile.id,
+      eventType: "order_placed",
+      payload: { orderNumber: number, totalPaise, taxPaise },
+      dedupeKey: `order_placed:${number}`,
+      whenPreviousStatementChanged: true,
+    }));
     if (refillReminderId) {
       statements.push(db.prepare(`UPDATE refill_reminders SET status = 'completed', repeat_order_id =
         (SELECT id FROM orders WHERE order_number = ?), snoozed_until = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ? AND customer_profile_id = ? AND status NOT IN ('completed', 'cancelled')`)
-        .bind(number, refillReminderId, profile.id));
+        WHERE id = ? AND customer_profile_id = ? AND status NOT IN ('completed', 'cancelled')
+          AND EXISTS (SELECT 1 FROM orders placed_order WHERE placed_order.order_number=?)`)
+        .bind(number, refillReminderId, profile.id, number));
     }
     try {
       await db.batch(statements);
@@ -288,11 +345,10 @@ export async function POST(request: Request) {
       throw error;
     }
     const savedOrder = await db.prepare("SELECT id FROM orders WHERE order_number = ? LIMIT 1").bind(number).first<{ id: number }>();
-    if (!savedOrder) throw new Error("Order transaction completed without an order record");
+    if (!savedOrder) return Response.json({ error: "This prescription was already used by another order. Refresh and select another prescription." }, { status: 409 });
 
-    await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "order.placed", entityType: "order", entityId: savedOrder.id, after: { number, prescriptionId, prescriptionStatus, refillReminderId, subtotalPaise, taxPaise, totalPaise, placeOfSupplyStateCode, paymentMethod, deliveryMethod, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), latitude, longitude, reservationExpiresAt: reservationExpiry, allocations: allocatedLines.map(({ inventoryId, batchNumber, allocatedQuantity }) => ({ inventoryId, batchNumber, allocatedQuantity })) }, requestId: request.headers.get("cf-ray") ?? "" });
-    await sendTransactionalEmail(profile.email, `URMED order ${number} received`, `<h2>Order ${number}</h2><p>Your order for ₹${(totalPaise / 100).toFixed(2)} including GST of ₹${(taxPaise / 100).toFixed(2)} has been received.</p>`);
-    return Response.json({ order: { id: savedOrder.id, orderNumber: number, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise, paymentMethod, prescriptionStatus, reservationExpiresAt: reservationExpiry, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), requiresPrescriptionReview: prescriptionStatus === "pending_review" } }, { status: 201 });
+    await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "order.placed", entityType: "order", entityId: savedOrder.id, after: { number, customerAddressId, prescriptionId, prescriptionStatus, refillReminderId, subtotalPaise, taxPaise, totalPaise, placeOfSupplyStateCode, paymentMethod, deliveryMethod, deliveryDistanceKm: Number(deliveryDistanceKm.toFixed(3)), latitude, longitude, reservationExpiresAt: reservationExpiry, allocations: allocatedLines.map(({ inventoryId, batchNumber, allocatedQuantity }) => ({ inventoryId, batchNumber, allocatedQuantity })) }, requestId: request.headers.get("cf-ray") ?? "" });
+    return Response.json({ order: { id: savedOrder.id, orderNumber: number, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise, paymentMethod, prescriptionStatus, reservationExpiresAt: reservationExpiry, requiresPrescriptionReview: prescriptionStatus === "pending_review" } }, { status: 201 });
   } catch (error) {
     return errorResponse(error);
   }

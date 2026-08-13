@@ -99,6 +99,8 @@ function createFixture(t) {
       batch_number TEXT NOT NULL,
       quantity INTEGER NOT NULL,
       free_quantity INTEGER DEFAULT 0 NOT NULL,
+      received_quantity INTEGER DEFAULT 0 NOT NULL,
+      received_free_quantity INTEGER DEFAULT 0 NOT NULL,
       purchase_price_paise INTEGER NOT NULL
     );
     CREATE TABLE supplier_returns (
@@ -168,7 +170,7 @@ function createFixture(t) {
       OR NEW.inventory_id <> COALESCE((SELECT inventory_id FROM purchase_order_items WHERE id = NEW.purchase_order_item_id), -1)
       OR NEW.quantity > COALESCE((SELECT quantity FROM pharmacy_inventory WHERE id = NEW.inventory_id), 0)
       OR NEW.quantity > (
-        COALESCE((SELECT quantity + free_quantity FROM purchase_order_items WHERE id = NEW.purchase_order_item_id), 0)
+        COALESCE((SELECT received_quantity + received_free_quantity FROM purchase_order_items WHERE id = NEW.purchase_order_item_id), 0)
         - COALESCE((SELECT SUM(items.quantity) FROM supplier_return_items items JOIN supplier_returns ret ON ret.id = items.supplier_return_id WHERE items.purchase_order_item_id = NEW.purchase_order_item_id AND ret.status <> 'cancelled'), 0)
       )
     BEGIN
@@ -199,9 +201,10 @@ function seedPurchase(sqlite, {
   sqlite.prepare("INSERT INTO pharmacy_inventory (id,vendor_id,product_id,quantity) VALUES (?,?,1,?)")
     .run(inventoryId, vendorId, currentQuantity);
   sqlite.prepare(`INSERT INTO purchase_order_items
-    (id,purchase_order_id,product_id,inventory_id,batch_number,quantity,free_quantity,purchase_price_paise)
-    VALUES (?,?,1,?,'BATCH-1',?,?,1000)`)
-    .run(purchaseOrderItemId, purchaseOrderId, inventoryId, quantity, freeQuantity);
+    (id,purchase_order_id,product_id,inventory_id,batch_number,quantity,free_quantity,
+      received_quantity,received_free_quantity,purchase_price_paise)
+    VALUES (?,?,1,?,'BATCH-1',?,?,?,?,1000)`)
+    .run(purchaseOrderItemId, purchaseOrderId, inventoryId, quantity, freeQuantity, quantity, freeQuantity);
   return { purchaseOrderItemId, inventoryId };
 }
 
@@ -219,10 +222,13 @@ test("received purchases appear in the supplier-return selector with legacy post
   seedPurchase(sqlite, { purchaseOrderId: 1000, purchaseOrderItemId: 5000, inventoryId: 100, status: "received" });
   seedPurchase(sqlite, { purchaseOrderId: 1001, purchaseOrderItemId: 5001, inventoryId: 101, status: "posted" });
   seedPurchase(sqlite, { purchaseOrderId: 1002, purchaseOrderItemId: 5002, inventoryId: 102, status: "draft" });
+  seedPurchase(sqlite, { purchaseOrderId: 1003, purchaseOrderItemId: 5003, inventoryId: 103, status: "partially_received", quantity: 8, currentQuantity: 3 });
+  sqlite.prepare("UPDATE purchase_order_items SET received_quantity=3 WHERE id=5003").run();
   seedPurchase(sqlite, { vendorId: 2, purchaseOrderId: 2000, purchaseOrderItemId: 6000, inventoryId: 200, status: "received" });
 
   const items = await listReturnablePurchases(db, 1);
-  assert.deepEqual(items.map((item) => item.purchaseOrderItemId).sort(), [5000, 5001]);
+  assert.deepEqual(items.map((item) => item.purchaseOrderItemId).sort(), [5000, 5001, 5003]);
+  assert.equal(items.find((item) => item.purchaseOrderItemId === 5003).purchasedQuantity, 3);
 });
 
 test("a completed received-purchase return updates stock, debit note, ledgers and audit", async (t) => {

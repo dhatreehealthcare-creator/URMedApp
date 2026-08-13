@@ -1,7 +1,8 @@
 import { getD1 } from "../../../../db/d1";
 import { requireAdminProfile } from "../../../../lib/admin-access";
-import { appendAuditEvent } from "../../../../lib/audit";
 import { errorResponse } from "../../../../lib/auth-server";
+import { ComplianceReviewError, reviewVendorCompliance } from "../../../../lib/vendor-compliance-review";
+import { BankAccountReviewError, reviewVendorBankAccount } from "../../../../lib/bank-account-review";
 
 async function listApplications() {
   const result = await getD1().prepare(`
@@ -9,9 +10,12 @@ async function listApplications() {
       v.phone, v.email, v.address, v.approval_status AS approvalStatus,
       v.compliance_status AS complianceStatus, v.created_at AS registeredAt,
       (SELECT COUNT(*) FROM vendor_licences l WHERE l.vendor_id = v.id) AS licenceCount,
-      (SELECT COUNT(*) FROM vendor_licences l WHERE l.vendor_id = v.id AND l.verification_status = 'verified' AND l.valid_until >= date('now')) AS validLicenceCount,
+      (SELECT COUNT(*) FROM vendor_licences l WHERE l.vendor_id = v.id AND l.verification_status = 'verified'
+        AND l.suspended_at IS NULL AND date(l.valid_from) <= date('now') AND date(l.valid_until) >= date('now')) AS validLicenceCount,
       (SELECT COUNT(*) FROM pharmacists p WHERE p.vendor_id = v.id AND p.active = 1) AS pharmacistCount,
-      (SELECT COUNT(*) FROM pharmacists p WHERE p.vendor_id = v.id AND p.active = 1 AND p.verification_status = 'verified' AND (p.valid_until IS NULL OR p.valid_until >= date('now'))) AS validPharmacistCount
+      (SELECT COUNT(*) FROM pharmacists p WHERE p.vendor_id = v.id AND p.active = 1 AND p.verification_status = 'verified'
+        AND (p.valid_from IS NULL OR date(p.valid_from) <= date('now'))
+        AND (p.valid_until IS NULL OR date(p.valid_until) >= date('now'))) AS validPharmacistCount
     FROM vendors v ORDER BY CASE v.compliance_status WHEN 'pending' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END, v.created_at DESC LIMIT 100
   `).all();
   const licences = await getD1().prepare(`
@@ -30,7 +34,16 @@ async function listApplications() {
     FROM pharmacists p LEFT JOIN stored_documents d ON d.id = p.document_id
     WHERE p.active = 1 AND p.verification_status IN ('pending', 'verified', 'rejected') ORDER BY p.created_at DESC LIMIT 200
   `).all();
-  return { applications: result.results, licences: licences.results, pharmacists: pharmacists.results };
+  const bankAccounts = await getD1().prepare(`
+    SELECT bank.id,bank.vendor_id AS vendorId,vendor.business_name AS businessName,
+      bank.bank_name AS bankName,bank.account_name AS accountName,bank.account_last4 AS accountLast4,
+      bank.ifsc_code AS ifscCode,bank.verification_status AS verificationStatus,bank.created_at AS submittedAt
+    FROM vendor_bank_accounts bank JOIN vendors vendor ON vendor.id=bank.vendor_id
+    WHERE bank.active=1 AND bank.verification_status IN ('pending','verified','rejected')
+    ORDER BY CASE bank.verification_status WHEN 'pending' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END,
+      bank.created_at DESC LIMIT 200
+  `).all();
+  return { applications: result.results, licences: licences.results, pharmacists: pharmacists.results, bankAccounts: bankAccounts.results };
 }
 
 export async function GET(request: Request) {
@@ -50,27 +63,20 @@ export async function POST(request: Request) {
     const decision = String(body.decision ?? "");
     const id = Number(body.id);
     const reason = String(body.reason ?? "").trim().slice(0, 500);
-    if (!["licence", "pharmacist"].includes(entity) || !["verified", "rejected"].includes(decision) || !Number.isInteger(id) || id < 1) {
+    if (!["licence", "pharmacist", "bank_account"].includes(entity) || !["verified", "rejected"].includes(decision) || !Number.isInteger(id) || id < 1) {
       return Response.json({ error: "Choose a valid compliance record and decision" }, { status: 400 });
     }
     if (decision === "rejected" && reason.length < 5) return Response.json({ error: "Add a clear rejection reason" }, { status: 400 });
     const db = getD1();
-    const table = entity === "licence" ? "vendor_licences" : "pharmacists";
-    const record = await db.prepare(`SELECT id, vendor_id AS vendorId FROM ${table} WHERE id = ? LIMIT 1`).bind(id).first<{ id: number; vendorId: number }>();
-    if (!record) return Response.json({ error: "Compliance record was not found" }, { status: 404 });
-    await db.prepare(`UPDATE ${table} SET verification_status = ?${entity === "licence" ? ", updated_at = CURRENT_TIMESTAMP" : ""} WHERE id = ?`).bind(decision, id).run();
-    const readiness = await db.prepare(`SELECT
-      EXISTS(SELECT 1 FROM vendor_licences WHERE vendor_id = ? AND verification_status = 'verified' AND valid_until >= date('now')) AS licenceReady,
-      EXISTS(SELECT 1 FROM pharmacists WHERE vendor_id = ? AND active = 1 AND verification_status = 'verified' AND (valid_until IS NULL OR valid_until >= date('now'))) AS pharmacistReady
-    `).bind(record.vendorId, record.vendorId).first<{ licenceReady: number; pharmacistReady: number }>();
-    const approved = Boolean(readiness?.licenceReady && readiness?.pharmacistReady);
-    const complianceStatus = approved ? "verified" : decision === "rejected" ? "rejected" : "pending";
-    const approvalStatus = approved ? "approved" : decision === "rejected" ? "rejected" : "testing";
-    await db.prepare(`UPDATE vendors SET compliance_status = ?, approval_status = ?, suspension_reason = ?,
-      suspended_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(complianceStatus, approvalStatus, decision === "rejected" ? reason : "", record.vendorId).run();
-    await appendAuditEvent({ vendorId: record.vendorId, actorProfileId: profile.id, action: `admin.${entity}.${decision}`, entityType: entity === "licence" ? "vendor_licence" : "pharmacist", entityId: id, after: { decision, reason, complianceStatus, approvalStatus }, requestId: request.headers.get("cf-ray") ?? "" });
-    return Response.json({ saved: true, ...(await listApplications()) });
+    const reviewed = entity === "bank_account"
+      ? await reviewVendorBankAccount({ db, id, decision: decision as "verified" | "rejected", reason,
+        actorProfileId: profile.id, requestId: request.headers.get("cf-ray") ?? "" })
+      : await reviewVendorCompliance({ db, entity: entity as "licence" | "pharmacist", id,
+        decision: decision as "verified" | "rejected", reason, actorProfileId: profile.id,
+        requestId: request.headers.get("cf-ray") ?? "" });
+    return Response.json({ saved: true, duplicate: reviewed.duplicate, ...(await listApplications()) });
   } catch (error) {
+    if (error instanceof ComplianceReviewError || error instanceof BankAccountReviewError) return Response.json({ error: error.message }, { status: error.status });
     return errorResponse(error);
   }
 }
