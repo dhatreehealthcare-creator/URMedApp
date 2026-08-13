@@ -23,9 +23,10 @@ export function isRoleSessionAuthorized(
 }
 
 export function isWorkspaceRoleAuthorized(
-  profile: Pick<WorkspaceProfile, "role" | "status" | "vendorAccessStatus"> | null,
+  profile: Pick<WorkspaceProfile, "role" | "status" | "emailVerified" | "phoneVerified" | "vendorAccessStatus"> | null,
   expectedRole: WorkspaceRole,
 ): boolean {
   if (!isRoleSessionAuthorized(profile, expectedRole)) return false;
+  if (expectedRole === "customer") return Boolean(profile?.emailVerified && profile.phoneVerified);
   return expectedRole !== "vendor" || profile?.vendorAccessStatus === "operational";
 }

@@ -59,6 +59,12 @@ if (typeof worker.default.scheduled !== "function") {
 if (!wrangler.triggers?.crons?.includes("*/5 * * * *")) {
   throw new Error("dist/server/wrangler.json must schedule reservation recovery every five minutes");
 }
+if (!wrangler.triggers?.crons?.includes("*/15 * * * *")) {
+  throw new Error("dist/server/wrangler.json must schedule customer reminder processing every fifteen minutes");
+}
+if (!wrangler.triggers?.crons?.includes("30 0 * * *")) {
+  throw new Error("dist/server/wrangler.json must schedule vendor inventory alerts daily");
+}
 NODE
 
-echo "Validated Sites artifact: Worker handlers, D1 migrations, R2, client assets, cron, and hosting bindings are aligned."
+echo "Validated Sites artifact: Worker handlers, D1 migrations, R2, client assets, scheduled jobs, and hosting bindings are aligned."

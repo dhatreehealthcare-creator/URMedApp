@@ -1,0 +1,26 @@
+.shell { position: relative; }
+.trigger { align-items: center; background: #fff; border: 1px solid #dce8e4; border-radius: 12px; color: #173d36; cursor: pointer; display: inline-flex; gap: 8px; min-height: 40px; padding: 8px 12px; }
+.badge { align-items: center; background: #b42318; border-radius: 999px; color: #fff; display: inline-flex; font-size: 11px; font-weight: 800; justify-content: center; min-height: 20px; min-width: 20px; padding: 0 6px; }
+.popover { background: #fff; border: 1px solid #dce8e4; border-radius: 18px; box-shadow: 0 22px 65px rgba(20, 55, 49, .18); margin-top: 10px; max-height: min(680px, 75vh); overflow: auto; padding: 18px; position: absolute; right: 0; width: min(520px, calc(100vw - 48px)); z-index: 20; }
+.heading { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 14px; }
+.heading h3 { color: #173d36; font-size: 18px; margin: 0; }
+.heading p { color: #63746f; font-size: 12px; margin: 4px 0 0; }
+.close { background: transparent; border: 0; color: #63746f; cursor: pointer; padding: 4px; }
+.list { display: grid; gap: 10px; }
+.alert { border: 1px solid #e5ece9; border-left: 4px solid #e7a826; border-radius: 12px; padding: 12px; }
+.critical { border-left-color: #b42318; }
+.muted { opacity: .65; }
+.alert header { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.alert strong { color: #173d36; font-size: 13px; }
+.alert p { color: #52645f; font-size: 12px; line-height: 1.45; margin: 7px 0; }
+.meta { color: #73817d; display: block; font-size: 11px; }
+.status { background: #eef6f3; border-radius: 999px; color: #25695e; font-size: 10px; font-weight: 800; padding: 4px 7px; text-transform: uppercase; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.actions button { background: #fff; border: 1px solid #cbdad5; border-radius: 8px; color: #24584f; cursor: pointer; font-size: 11px; font-weight: 700; padding: 6px 8px; }
+.actions button:first-child { background: #24584f; border-color: #24584f; color: #fff; }
+.empty { color: #667771; font-size: 13px; margin: 8px 0; }
+.error { color: #b42318; font-size: 12px; margin: 8px 0; }
+
+@media (max-width: 720px) {
+  .popover { left: 0; right: auto; width: min(520px, calc(100vw - 32px)); }
+}

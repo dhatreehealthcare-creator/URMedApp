@@ -35,7 +35,12 @@ export function getAuthClient() {
   clientPromise ??= getRuntimeConfig().then((config) => {
     if (!config.supabase.ready) return null;
     return createClient(config.supabase.url, config.supabase.anonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        flowType: "implicit",
+      },
     });
   });
   return clientPromise;

@@ -2,10 +2,11 @@ import { getD1 } from "../../../db/d1";
 import { getR2 } from "../../../db/storage";
 import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
+import { DocumentUploadQuotaError, documentUploadQuotaResponse, reserveDocumentUpload } from "../../../lib/document-upload-quota";
 import { requireVendorOnboardingAccess, requireVendorPermission } from "../../../lib/vendor-access";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
-const allowedPurposes = new Set(["drug_licence", "pharmacist_registration", "prescription", "delivery_proof"]);
+const allowedPurposes = new Set(["drug_licence", "pharmacist_registration", "prescription", "offline_prescription"]);
 const mimeByExtension: Record<string, string[]> = {
   jpg: ["image/jpeg"], jpeg: ["image/jpeg"], png: ["image/png"], pdf: ["application/pdf"],
   doc: ["application/msword", "application/octet-stream"],
@@ -28,12 +29,16 @@ async function sha256Hex(buffer: ArrayBuffer) {
 
 export async function POST(request: Request) {
   let objectKey = "";
+  let documentId = 0;
   try {
     const { profile } = await requireLocalProfile(request, ["customer", "vendor", "delivery"], { allowIncompleteVendor: true });
     const form = await request.formData();
     const file = form.get("file");
     const purpose = String(form.get("purpose") ?? "").trim();
     if (!(file instanceof File)) return Response.json({ error: "Choose a document to upload" }, { status: 400 });
+    if (purpose === "delivery_proof") {
+      return Response.json({ error: "This document upload is not available" }, { status: 409 });
+    }
     if (!allowedPurposes.has(purpose)) return Response.json({ error: "Document purpose is invalid" }, { status: 400 });
     if (!file.size || file.size > MAX_FILE_BYTES) return Response.json({ error: "Document must be smaller than 8 MB" }, { status: 400 });
     const filename = file.name.replace(/[^a-zA-Z0-9._ -]/g, "_").slice(0, 160);
@@ -48,28 +53,46 @@ export async function POST(request: Request) {
     let vendorId: number | null = null;
     if (purpose === "drug_licence" || purpose === "pharmacist_registration") {
       if (profile.role !== "vendor") return Response.json({ error: "Only a pharmacy may upload this document" }, { status: 403 });
-      vendorId = purpose === "drug_licence"
-        ? (await requireVendorOnboardingAccess(request)).vendorId
-        : (await requireVendorPermission(request, "licence.manage")).vendorId;
+      vendorId = (await requireVendorOnboardingAccess(request)).vendorId;
+    } else if (purpose === "offline_prescription") {
+      if (profile.role !== "vendor") return Response.json({ error: "Only an operational pharmacy may capture a counter prescription" }, { status: 403 });
+      vendorId = (await requireVendorPermission(request, "sale.write", { profile })).vendorId;
     } else if (purpose === "prescription" && profile.role !== "customer") {
       return Response.json({ error: "Only a customer may upload a prescription" }, { status: 403 });
     }
     const checksum = await sha256Hex(buffer);
-    objectKey = `${purpose}/${vendorId ?? profile.id}/${crypto.randomUUID()}.${extension}`;
+    const candidateObjectKey = `${purpose}/${vendorId ?? profile.id}/${crypto.randomUUID()}.${extension}`;
+    const db = getD1();
+    documentId = await reserveDocumentUpload(db, {
+      ownerProfileId: profile.id,
+      vendorId,
+      purpose,
+      objectKey: candidateObjectKey,
+      filename,
+      mimeType: declaredMime,
+      sizeBytes: file.size,
+      checksum,
+    });
+    objectKey = candidateObjectKey;
     await getR2().put(objectKey, buffer, {
       httpMetadata: { contentType: declaredMime, contentDisposition: `inline; filename="${filename.replaceAll('"', "")}"` },
       customMetadata: { purpose, sha256: checksum, ownerProfileId: String(profile.id), vendorId: String(vendorId ?? "") },
     });
-    const inserted = await getD1().prepare(`
-      INSERT INTO stored_documents (owner_profile_id, vendor_id, purpose, object_key, original_filename,
-        mime_type, size_bytes, sha256, malware_status, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'content_validated', 'active')
-    `).bind(profile.id, vendorId, purpose, objectKey, filename, declaredMime, file.size, checksum).run();
-    const documentId = Number(inserted.meta.last_row_id);
+    const activated = await db.prepare(`UPDATE stored_documents SET status='active'
+      WHERE id=? AND owner_profile_id=? AND status='upload_pending'`).bind(documentId, profile.id).run();
+    if (!activated.meta.changes) throw new Error("Document metadata changed before upload activation");
     await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "document.uploaded", entityType: "stored_document", entityId: documentId, after: { purpose, filename, sizeBytes: file.size, sha256: checksum }, requestId: request.headers.get("cf-ray") ?? "" });
     return Response.json({ document: { id: documentId, filename, purpose, sizeBytes: file.size, status: "content_validated" } }, { status: 201 });
   } catch (error) {
-    if (objectKey) await getR2().delete(objectKey).catch(() => undefined);
+    if (objectKey) {
+      try { await getR2().delete(objectKey); } catch { /* best-effort R2 rollback */ }
+    }
+    if (documentId) {
+      try { await getD1().prepare("DELETE FROM stored_documents WHERE id=?").bind(documentId).run(); } catch { /* best-effort metadata rollback */ }
+    }
+    if (error instanceof DocumentUploadQuotaError) {
+      return documentUploadQuotaResponse(error);
+    }
     return errorResponse(error);
   }
 }

@@ -5,17 +5,36 @@ import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, FileCheck2, Lan
 import { authenticatedFetch, getAuthClient } from "./marketplace-client";
 import { GeoLocationPicker } from "./geo-location-picker";
 import { isValidGeoPoint } from "../lib/geo";
+import { isProviderIdentityConflict, verifiedContactConflictMessage } from "../lib/auth-identity-messages";
+import {
+  isVerifiedPhoneChangeReady,
+  licenceDisplayState,
+  passwordPolicyMessage,
+  selectCurrentLicence,
+  type LicenceDisplayState,
+} from "../lib/vendor-profile";
 
 type Vendor = {
   id: number; businessName: string; ownerName: string; phone: string; landline: string; email: string;
-  gstNumber: string; address: string; latitude: string; longitude: string; homeDelivery: number;
+  gstNumber: string; licenceNumber: string; address: string; latitude: string; longitude: string; homeDelivery: number;
   approvalStatus: string; complianceStatus: string; deliveryRadiusKm: number;
-  registrationStatus: string; registrationSubmittedAt: string | null; emailVerified: number; phoneVerified: number;
+  registrationStatus: string; registrationSubmittedAt: string | null; updatedAt: string; emailVerified: number; phoneVerified: number;
 };
 type Bank = { bankName: string; accountName: string; accountLast4: string; ifscCode: string; verificationStatus: string } | null;
 type Licence = { id: number; licenceNumber: string; formType: string; issuingAuthority: string; issuedOn: string | null; validFrom: string; validUntil: string; documentName: string; verificationStatus: string };
 type Pharmacist = { id: number; fullName: string; councilName: string; registrationNumber: string; validFrom: string | null; validUntil: string | null; documentName: string; verificationStatus: string; active: number };
-type Setup = { vendor: Vendor; bank: Bank; licences: Licence[]; pharmacists: Pharmacist[] };
+type Setup = {
+  vendor: Vendor;
+  registrationDraft: {
+    businessName: string; ownerName: string; landline: string; gstNumber: string; address: string;
+    latitude: string; longitude: string; homeDelivery: boolean; deliveryRadiusKm: number;
+    licenceNumber: string; savedAt: string;
+  } | null;
+  bank: Bank;
+  bankVerification: { status: string; message: string };
+  licences: Licence[];
+  pharmacists: Pharmacist[];
+};
 type RegistrationDraft = {
   businessName: string; ownerName: string; landline: string; gstNumber: string; address: string;
   homeDelivery: boolean; deliveryRadiusKm: string; licenceNumber: string; formType: string;
@@ -48,6 +67,14 @@ function Status({ value }: { value: string }) {
   return <span className={`portal-status ${tone}`}>{value.replaceAll("_", " ")}</span>;
 }
 
+const licenceStateLabels: Record<LicenceDisplayState, string> = {
+  current: "current",
+  expiring_soon: "expires within 3 months",
+  expired: "expired",
+  pending_review: "pending review",
+  rejected: "rejected",
+};
+
 export function VendorSetup({ registrationMode = false }: { registrationMode?: boolean }) {
   const [setup, setSetup] = useState<Setup | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +86,9 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
   const [phoneDraft, setPhoneDraft] = useState("");
   const [phoneOtp, setPhoneOtp] = useState("");
   const [phoneOtpSent, setPhoneOtpSent] = useState(false);
-  const [phoneVerified, setPhoneVerified] = useState(false);
+  const [providerVerifiedPhone, setProviderVerifiedPhone] = useState("");
+  const [passwordNonce, setPasswordNonce] = useState("");
+  const [passwordOtpSent, setPasswordOtpSent] = useState(false);
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
   const [registrationStep, setRegistrationStep] = useState(1);
@@ -71,17 +100,21 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
     try {
       const response = await authenticatedFetch("/api/vendor/setup", { cache: "no-store" });
       const result = await responsePayload(response) as unknown as Setup;
-      setSetup(result); setPhoneDraft(result.vendor.phone); setPhoneVerified(Boolean(result.vendor.phoneVerified));
-      setLatitude(result.vendor.latitude || ""); setLongitude(result.vendor.longitude || "");
+      const storedDraft = result.registrationDraft;
+      setSetup(result); setPhoneDraft(result.vendor.phone);
+      setProviderVerifiedPhone(result.vendor.phoneVerified ? result.vendor.phone : "");
+      setLatitude(storedDraft?.latitude || result.vendor.latitude || "");
+      setLongitude(storedDraft?.longitude || result.vendor.longitude || "");
       setRegistrationDraft({
         ...emptyRegistrationDraft,
-        businessName: result.vendor.businessName,
-        ownerName: result.vendor.ownerName,
-        landline: result.vendor.landline,
-        gstNumber: result.vendor.gstNumber,
-        address: result.vendor.address,
-        homeDelivery: Boolean(result.vendor.homeDelivery),
-        deliveryRadiusKm: String(result.vendor.deliveryRadiusKm || 5),
+        businessName: storedDraft?.businessName || result.vendor.businessName,
+        ownerName: storedDraft?.ownerName || result.vendor.ownerName,
+        landline: storedDraft?.landline || result.vendor.landline,
+        gstNumber: storedDraft?.gstNumber || result.vendor.gstNumber,
+        address: storedDraft?.address || result.vendor.address,
+        homeDelivery: storedDraft?.homeDelivery ?? Boolean(result.vendor.homeDelivery),
+        deliveryRadiusKm: String(storedDraft?.deliveryRadiusKm || result.vendor.deliveryRadiusKm || 5),
+        licenceNumber: storedDraft?.licenceNumber || result.vendor.licenceNumber || "",
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Vendor setup is unavailable");
@@ -99,7 +132,13 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
       const response = await authenticatedFetch("/api/vendor/setup", { method: "POST", body: JSON.stringify({ action, ...values }) });
       const result = await responsePayload(response) as unknown as Setup & { saved: boolean };
       setSetup(result);
-      setMessage(`${action === "registration" ? "Vendor registration" : action === "profile" ? "Pharmacy profile" : action === "bank" ? "Bank details" : action === "licence" ? "Drug licence" : "Pharmacist registration"} saved successfully.`);
+      if (action === "profile") {
+        setPhoneDraft(result.vendor.phone);
+        setProviderVerifiedPhone(result.vendor.phoneVerified ? result.vendor.phone : "");
+      }
+      setMessage(action === "registration_draft"
+        ? "Registration draft saved. You can sign out and resume from this account later."
+        : `${action === "registration" ? "Vendor registration" : action === "profile" ? "Pharmacy profile" : action === "bank" ? "Bank details" : action === "licence" ? "Drug licence" : "Pharmacist registration"} saved successfully.`);
     } finally { setBusy(""); }
   };
 
@@ -115,11 +154,15 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
     setBusy("phone-otp"); setError(""); setMessage("");
     try {
       if (!/^\d{10}$/.test(phoneDraft)) throw new Error("Enter a valid 10-digit Indian mobile number");
+      if (setup && phoneDraft === setup.vendor.phone && setup.vendor.phoneVerified) {
+        setProviderVerifiedPhone(phoneDraft); setMessage("This is already the provider-verified phone number."); return;
+      }
       const client = await getAuthClient();
       if (!client) throw new Error("OTP service keys are not connected yet");
       const { error: authError } = await client.auth.updateUser({ phone: `+91${phoneDraft}` });
+      if (authError && isProviderIdentityConflict(authError)) throw new Error(verifiedContactConflictMessage("phone"));
       if (authError) throw authError;
-      setPhoneOtpSent(true); setMessage("OTP sent to the new phone number.");
+      setProviderVerifiedPhone(""); setPhoneOtpSent(true); setMessage("OTP sent to the new phone number. The profile is unchanged until provider verification succeeds.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Phone OTP could not be sent"); }
     finally { setBusy(""); }
   };
@@ -132,8 +175,11 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
       if (!client) throw new Error("OTP service keys are not connected yet");
       const { error: authError } = await client.auth.verifyOtp({ phone: `+91${phoneDraft}`, token: phoneOtp, type: "phone_change" });
       if (authError) throw authError;
-      await load();
-      setPhoneVerified(true); setPhoneOtpSent(false); setPhoneOtp(""); setMessage("Phone number verified. You can continue vendor registration.");
+      const { data: userResult, error: userError } = await client.auth.getUser();
+      if (userError) throw userError;
+      const confirmedPhone = String(userResult.user?.phone ?? "").replace(/\D/g, "").replace(/^91(?=\d{10}$)/, "");
+      if (confirmedPhone !== phoneDraft || !userResult.user?.phone_confirmed_at) throw new Error("The identity provider has not confirmed this phone number yet");
+      setProviderVerifiedPhone(phoneDraft); setPhoneOtpSent(false); setPhoneOtp(""); setMessage("Phone number verified by the identity provider. Save the pharmacy profile to apply it.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Phone OTP could not be verified"); }
     finally { setBusy(""); }
   };
@@ -143,14 +189,28 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
     const password = String(form.get("password") || ""); const confirm = String(form.get("confirmPassword") || "");
     setBusy("password"); setError(""); setMessage("");
     try {
-      if (password.length < 8) throw new Error("The new password must contain at least 8 characters");
+      const policyError = passwordPolicyMessage(password);
+      if (policyError) throw new Error(policyError);
       if (password !== confirm) throw new Error("The new password and confirmation do not match");
+      if (!/^\d{6}$/.test(passwordNonce)) throw new Error("Enter the 6-digit reauthentication code sent by the identity provider");
       const client = await getAuthClient();
       if (!client) throw new Error("Authentication keys are not connected yet");
-      const { error: authError } = await client.auth.updateUser({ password });
+      const { error: authError } = await client.auth.updateUser({ password, nonce: passwordNonce });
       if (authError) throw authError;
-      formElement.reset(); setMessage("Password changed securely.");
+      formElement.reset(); setPasswordNonce(""); setPasswordOtpSent(false); setMessage("Password changed after identity-provider reauthentication.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Password could not be changed"); }
+    finally { setBusy(""); }
+  };
+
+  const requestPasswordNonce = async () => {
+    setBusy("password-reauth"); setError(""); setMessage("");
+    try {
+      const client = await getAuthClient();
+      if (!client) throw new Error("Authentication keys are not connected yet");
+      const { error: authError } = await client.auth.reauthenticate();
+      if (authError) throw authError;
+      setPasswordOtpSent(true); setMessage("A 6-digit password-change code was sent by the identity provider.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Password reauthentication could not be started"); }
     finally { setBusy(""); }
   };
 
@@ -181,7 +241,7 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
       if (!registrationDraft.businessName.trim() || !registrationDraft.ownerName.trim()) return setError("Shop or business name and owner name are required");
       if (!/^\d{10}$/.test(phoneDraft)) return setError("Phone must contain exactly 10 digits");
       if (registrationDraft.landline && !/^\d{10}$/.test(registrationDraft.landline)) return setError("Landline must contain exactly 10 digits when entered");
-      if (!phoneVerified) return setError("Verify the mobile number with OTP before continuing");
+      if (!isVerifiedPhoneChangeReady({ originalPhone: vendor.phone, originalPhoneVerified: Boolean(vendor.phoneVerified), draftPhone: phoneDraft, providerVerifiedPhone })) return setError("Verify the mobile number with OTP before continuing");
     }
     if (registrationStep === 2) {
       if (!registrationDraft.address.trim()) return setError("Enter the private registered address");
@@ -192,7 +252,9 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
       if (registrationDraft.validUntil < registrationDraft.validFrom) return setError("Licence expiry must be after the valid-from date");
       if (!licenceFile) return setError("Choose the drug licence document");
     }
-    setRegistrationStep((current) => Math.min(4, current + 1));
+    void save("registration_draft", { ...registrationDraft, latitude, longitude })
+      .then(() => setRegistrationStep((current) => Math.min(4, current + 1)))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "Registration draft could not be saved"));
   };
 
   const submitRegistration = () => {
@@ -201,6 +263,7 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
       const documentId = await upload(licenceFile, "drug_licence");
       await save("registration", { ...registrationDraft, phone: phoneDraft, latitude, longitude, documentId });
       setRegistrationSubmitted(true);
+      window.location.assign("/vendor/registration/status");
     })().catch((reason) => { setBusy(""); setError(reason instanceof Error ? reason.message : "Vendor registration could not be submitted"); });
   };
 
@@ -208,21 +271,33 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
   if (!setup) return <section className="portal-panel vendor-setup-gate"><AlertTriangle size={23} /><div><h2>Vendor sign-in required</h2><p>{error || "Create or sign in to a vendor account above, then complete the pharmacy profile."}</p></div><button className="portal-outline" onClick={() => void load()} type="button"><RefreshCw size={15} /> Try again</button></section>;
 
   const { vendor, bank, licences, pharmacists } = setup;
+  const phoneChangeReady = isVerifiedPhoneChangeReady({
+    originalPhone: vendor.phone,
+    originalPhoneVerified: Boolean(vendor.phoneVerified),
+    draftPhone: phoneDraft,
+    providerVerifiedPhone,
+  });
+  const currentLicence = selectCurrentLicence(licences);
+  const currentLicenceState = currentLicence ? licenceDisplayState(currentLicence) : null;
   if (registrationMode) return <div className="portal-stack vendor-registration-live">
     <section className="portal-panel setup-progress"><div><span className="portal-kicker">UNIFIED VENDOR REGISTRATION</span><h2>Register your pharmacy</h2><p>Verify the account email and mobile number, then submit business, private location, and drug licence details for administrator review.</p></div><div className="setup-statuses"><Status value={vendor.emailVerified ? "email_verified" : "email_pending"} /><Status value={vendor.phoneVerified ? "phone_verified" : "phone_pending"} /><Status value={vendor.registrationStatus} /><Status value={vendor.approvalStatus} /></div></section>
     {message && <div className="portal-success"><CheckCircle2 size={18} /><span>{message}</span></div>}
     {error && <div className="recovery-error"><AlertTriangle size={18} /><span><strong>Action needed</strong><small>{error}</small></span></div>}
-    {registrationSubmitted || vendor.registrationStatus === "submitted" ? <section className="portal-panel registration-complete"><CheckCircle2 size={34} /><div><span className="portal-kicker">SUBMISSION RECEIVED</span><h2>Pharmacy registration is under review</h2><p>Your verified identity, business profile, private location, and licence were saved together. Operational access begins only after administrator approval and compliance verification.</p><div className="setup-statuses"><Status value="identity_verified" /><Status value="submitted" /><Status value={vendor.approvalStatus} /><Status value={vendor.complianceStatus} /></div></div></section> : <section className="portal-panel registration-wizard">
+    {registrationSubmitted || vendor.registrationStatus === "submitted" ? <><section className="portal-panel registration-complete"><CheckCircle2 size={34} /><div><span className="portal-kicker">SUBMISSION RECEIVED</span><h2>Pharmacy registration is under review</h2><p>Your verified identity, business profile, private location, and licence were saved together. Operational access begins only after administrator approval and compliance verification.</p><div className="setup-statuses"><Status value="identity_verified" /><Status value="submitted" /><Status value={vendor.approvalStatus} /><Status value={vendor.complianceStatus} /></div><a className="portal-primary registration-status-link" href="/vendor/registration/status">View detailed registration status</a></div></section>
+      <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">REQUIRED FOR APPROVAL</span><h2>Registered pharmacist</h2><p>Add the State Pharmacy Council registration while the vendor package is under review.</p></div><UserRoundCheck size={21} /></div>
+        <form className="portal-form-grid" onSubmit={submitPharmacist}><label className="portal-field"><span>Pharmacist full name *</span><input name="fullName" required /></label><label className="portal-field"><span>State Pharmacy Council *</span><input defaultValue="Telangana State Pharmacy Council" name="councilName" required /></label><label className="portal-field"><span>Registration number *</span><input name="registrationNumber" required /></label><label className="portal-field"><span>Valid from</span><input name="validFrom" type="date" /></label><label className="portal-field"><span>Valid until</span><input name="validUntil" type="date" /></label><label className="portal-field"><span>Registration document *</span><div className="file-control"><Upload size={17} /><span>{pharmacistFile?.name || "Choose JPG, PNG, PDF, DOC or DOCX"}</span><input accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" onChange={(event) => setPharmacistFile(event.target.files?.[0] || null)} required type="file" /></div></label><button className="portal-primary wide" disabled={Boolean(busy)} type="submit">{busy === "pharmacist" ? "Validating and uploading…" : "Submit pharmacist for review"}</button></form>
+        <div className="saved-record-list">{pharmacists.map((item) => <div className="saved-record" key={item.id}><UserRoundCheck size={17} /><div><strong>{item.fullName}</strong><small>{item.registrationNumber} · {item.councilName}</small></div><Status value={item.verificationStatus} /></div>)}</div>
+      </section></> : <section className="portal-panel registration-wizard">
       <nav aria-label="Vendor registration progress" className="registration-steps">{registrationSteps.map(({ number, label, Icon }) => <button aria-current={registrationStep === number ? "step" : undefined} className={registrationStep === number ? "active" : registrationStep > number ? "done" : ""} disabled={number > registrationStep} key={label} onClick={() => setRegistrationStep(number)} type="button"><span>{registrationStep > number ? <CheckCircle2 size={17} /> : <Icon size={17} />}</span><small>Step {number}</small><strong>{label}</strong></button>)}</nav>
-      <div className="portal-panel-heading"><div><span className="portal-kicker">STEP {registrationStep} OF 4</span><h2>{registrationStep === 1 ? "Business and verified contact" : registrationStep === 2 ? "Private registered location" : registrationStep === 3 ? "Drug licence" : "Review and submit"}</h2><p>{registrationStep === 1 ? "Both the account email and mobile number must be provider-verified before submission." : registrationStep === 2 ? "This legal address and its coordinates are private and are not returned to customers." : registrationStep === 3 ? "Upload the current retail drug licence for administrator review." : "Confirm the complete registration before sending it for review."}</p></div></div>
+      <div className="portal-panel-heading"><div><span className="portal-kicker">STEP {registrationStep} OF 4</span><h2>{registrationStep === 1 ? "Business and verified contact" : registrationStep === 2 ? "Private registered location" : registrationStep === 3 ? "Drug licence" : "Review and submit"}</h2><p>{registrationStep === 1 ? "Both the account email and mobile number must be provider-verified before submission." : registrationStep === 2 ? "This legal address and its coordinates are private and are not returned to customers." : registrationStep === 3 ? "Upload the current retail drug licence for administrator review." : "Confirm the complete registration before sending it for review."}</p>{setup.registrationDraft?.savedAt && <small>Draft restored from {new Date(setup.registrationDraft.savedAt).toLocaleString()}. Uploaded files are selected only for final submission and must be chosen again after an interruption.</small>}</div></div>
       {registrationStep === 1 && <div className="portal-form-grid">
         <label className="portal-field"><span>Shop / business name *</span><input autoComplete="organization" maxLength={180} onChange={(event) => updateRegistration("businessName", event.target.value)} required value={registrationDraft.businessName} /></label>
         <label className="portal-field"><span>Owner name *</span><input autoComplete="name" maxLength={120} onChange={(event) => updateRegistration("ownerName", event.target.value)} required value={registrationDraft.ownerName} /></label>
-        <label className="portal-field"><span>10-digit mobile number *</span><input inputMode="numeric" maxLength={10} onChange={(event) => { setPhoneDraft(event.target.value.replace(/\D/g, "")); setPhoneVerified(false); setPhoneOtpSent(false); }} pattern="[0-9]{10}" required value={phoneDraft} /><small>{phoneVerified ? "OTP verified" : "OTP verification required"}</small></label>
+        <label className="portal-field"><span>10-digit mobile number *</span><input inputMode="numeric" maxLength={10} onChange={(event) => { setPhoneDraft(event.target.value.replace(/\D/g, "")); setProviderVerifiedPhone(""); setPhoneOtpSent(false); }} pattern="[0-9]{10}" required value={phoneDraft} /><small>{phoneChangeReady ? "OTP verified" : "OTP verification required"}</small></label>
         <label className="portal-field"><span>10-digit landline</span><input inputMode="numeric" maxLength={10} onChange={(event) => updateRegistration("landline", event.target.value.replace(/\D/g, ""))} pattern="[0-9]{10}" value={registrationDraft.landline} /><small>Optional; exactly 10 digits when entered.</small></label>
         <label className="portal-field"><span>Account email</span><input readOnly value={vendor.email} /><small>{vendor.emailVerified ? "Email verified by the identity provider" : "Email verification is still pending; open the verification link before submission"}</small></label>
         <label className="portal-field"><span>GSTIN</span><input maxLength={15} onChange={(event) => updateRegistration("gstNumber", event.target.value.toUpperCase())} pattern="[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]" value={registrationDraft.gstNumber} /><small>Optional at registration; required before GST-rated sales.</small></label>
-        <div className="phone-verify-row wide"><button className="portal-outline" disabled={Boolean(busy) || phoneVerified} onClick={() => void sendPhoneOtp()} type="button">{phoneVerified ? "Phone verified" : busy === "phone-otp" ? "Sending…" : "Send phone OTP"}</button>{phoneOtpSent && <><input aria-label="Phone OTP" inputMode="numeric" maxLength={6} onChange={(event) => setPhoneOtp(event.target.value.replace(/\D/g, ""))} placeholder="6-digit OTP" value={phoneOtp} /><button className="portal-secondary" disabled={Boolean(busy) || phoneOtp.length !== 6} onClick={() => void verifyPhoneOtp()} type="button">Verify OTP</button></>}</div>
+        <div className="phone-verify-row wide"><button className="portal-outline" disabled={Boolean(busy) || phoneChangeReady} onClick={() => void sendPhoneOtp()} type="button">{phoneChangeReady ? "Phone verified" : busy === "phone-otp" ? "Sending…" : "Send phone OTP"}</button>{phoneOtpSent && <><input aria-label="Phone OTP" inputMode="numeric" maxLength={6} onChange={(event) => setPhoneOtp(event.target.value.replace(/\D/g, ""))} placeholder="6-digit OTP" value={phoneOtp} /><button className="portal-secondary" disabled={Boolean(busy) || phoneOtp.length !== 6} onClick={() => void verifyPhoneOtp()} type="button">Verify OTP</button></>}</div>
       </div>}
       {registrationStep === 2 && <div className="portal-form-grid">
         <label className="portal-field wide"><span>Private registered address *</span><textarea maxLength={500} onChange={(event) => updateRegistration("address", event.target.value)} required rows={4} value={registrationDraft.address} /><small>Legal/compliance use only. Customers cannot see this address or its coordinates.</small></label>
@@ -245,7 +320,7 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
         <article><FileCheck2 size={18} /><div><small>Drug licence</small><strong>{registrationDraft.licenceNumber} · Form {registrationDraft.formType}</strong><p>Valid {registrationDraft.validFrom} to {registrationDraft.validUntil} · {licenceFile?.name}</p></div><button onClick={() => setRegistrationStep(3)} type="button">Edit</button></article>
         <div className="portal-note"><ShieldCheck size={18} /><span><strong>Private-data commitment</strong><small>The registered address and exact coordinates are restricted to compliance and vendor operations. A future public pickup location will be reviewed separately.</small></span></div>
       </div>}
-      <footer className="registration-actions">{registrationStep > 1 && <button className="portal-outline" disabled={Boolean(busy)} onClick={() => setRegistrationStep((current) => current - 1)} type="button"><ChevronLeft size={16} /> Back</button>}<span />{registrationStep < 4 ? <button className="portal-primary" disabled={Boolean(busy)} onClick={continueRegistration} type="button">Continue <ChevronRight size={16} /></button> : <button className="portal-primary" disabled={Boolean(busy) || !vendor.emailVerified || !phoneVerified} onClick={submitRegistration} type="button">{busy === "registration" ? "Uploading and submitting…" : "Submit vendor registration"} <ShieldCheck size={16} /></button>}</footer>
+      <footer className="registration-actions">{registrationStep > 1 && <button className="portal-outline" disabled={Boolean(busy)} onClick={() => setRegistrationStep((current) => current - 1)} type="button"><ChevronLeft size={16} /> Back</button>}<span />{registrationStep < 4 ? <button className="portal-primary" disabled={Boolean(busy)} onClick={continueRegistration} type="button">{busy === "registration_draft" ? "Saving draft…" : "Continue"} <ChevronRight size={16} /></button> : <button className="portal-primary" disabled={Boolean(busy) || !vendor.emailVerified || !phoneChangeReady} onClick={submitRegistration} type="button">{busy === "registration" ? "Uploading and submitting…" : "Submit vendor registration"} <ShieldCheck size={16} /></button>}</footer>
     </section>}
   </div>;
   return <div className="portal-stack vendor-setup-live">
@@ -253,11 +328,11 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
     {message && <div className="portal-success"><CheckCircle2 size={18} /><span>{message}</span></div>}
     {error && <div className="recovery-error"><AlertTriangle size={18} /><span><strong>Action needed</strong><small>{error}</small></span></div>}
 
-    <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">PHARMACY PROFILE</span><h2>Business and delivery details</h2><p>The registered email cannot be changed here. Phone numbers and GSTIN are checked before saving.</p></div><ShieldCheck size={22} /></div>
+    <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">PHARMACY PROFILE</span><h2>Business and delivery details</h2><p>The registered email cannot be changed here. A changed phone is saved only after the identity provider confirms its OTP.</p></div><ShieldCheck size={22} /></div>
       <form className="portal-form-grid" onSubmit={submitProfile}>
         <label className="portal-field"><span>Shop / business name *</span><input defaultValue={vendor.businessName} name="businessName" required /></label>
         <label className="portal-field"><span>Owner name *</span><input defaultValue={vendor.ownerName} name="ownerName" required /></label>
-        <label className="portal-field"><span>10-digit phone *</span><input inputMode="numeric" maxLength={10} name="phone" onChange={(event) => { setPhoneDraft(event.target.value.replace(/\D/g, "")); setPhoneVerified(false); setPhoneOtpSent(false); }} pattern="[0-9]{10}" required value={phoneDraft} /><small>{phoneVerified ? "OTP verified" : "OTP verification required before saving"}</small></label>
+        <label className="portal-field"><span>10-digit phone *</span><input inputMode="numeric" maxLength={10} name="phone" onChange={(event) => { setPhoneDraft(event.target.value.replace(/\D/g, "")); setProviderVerifiedPhone(""); setPhoneOtpSent(false); }} pattern="[0-9]{10}" required value={phoneDraft} /><small>{phoneChangeReady ? "Provider verified" : "Provider verification required before saving"}</small></label>
         <label className="portal-field"><span>10-digit landline</span><input defaultValue={vendor.landline} inputMode="numeric" maxLength={10} name="landline" pattern="[0-9]{10}" /></label>
         <label className="portal-field"><span>Verified email</span><input defaultValue={vendor.email} readOnly /></label>
         <label className="portal-field"><span>GSTIN</span><input defaultValue={vendor.gstNumber} maxLength={15} name="gstNumber" /></label>
@@ -266,22 +341,25 @@ export function VendorSetup({ registrationMode = false }: { registrationMode?: b
         <GeoLocationPicker label="Pharmacy entrance and dispatch location" latitude={latitude} longitude={longitude} onChange={(location) => { setLatitude(location.latitude); setLongitude(location.longitude); }} />
         <label className="portal-field"><span>Home delivery</span><select defaultValue={vendor.homeDelivery ? "1" : ""} name="homeDelivery"><option value="1">Yes</option><option value="">No</option></select></label>
         <label className="portal-field"><span>Delivery radius (km)</span><input defaultValue={vendor.deliveryRadiusKm || 5} max="50" min="1" name="deliveryRadiusKm" type="number" /></label>
-        <div className="phone-verify-row wide"><button className="portal-outline" disabled={Boolean(busy) || phoneVerified} onClick={() => void sendPhoneOtp()} type="button">{phoneVerified ? "Phone verified" : busy === "phone-otp" ? "Sending…" : "Send phone OTP"}</button>{phoneOtpSent && <><input aria-label="Phone OTP" inputMode="numeric" maxLength={6} onChange={(event) => setPhoneOtp(event.target.value.replace(/\D/g, ""))} placeholder="6-digit OTP" value={phoneOtp} /><button className="portal-secondary" disabled={Boolean(busy) || phoneOtp.length !== 6} onClick={() => void verifyPhoneOtp()} type="button">Verify OTP</button></>}</div>
-        <button className="portal-primary wide" disabled={Boolean(busy) || !phoneVerified} type="submit">{busy === "profile" ? "Saving…" : "Save pharmacy profile"}</button>
+        <div className="phone-verify-row wide"><button className="portal-outline" disabled={Boolean(busy) || phoneChangeReady} onClick={() => void sendPhoneOtp()} type="button">{phoneChangeReady ? "Phone verified" : busy === "phone-otp" ? "Sending…" : "Send phone OTP"}</button>{phoneOtpSent && <><input aria-label="Phone OTP" inputMode="numeric" maxLength={6} onChange={(event) => setPhoneOtp(event.target.value.replace(/\D/g, ""))} placeholder="6-digit OTP" value={phoneOtp} /><button className="portal-secondary" disabled={Boolean(busy) || phoneOtp.length !== 6} onClick={() => void verifyPhoneOtp()} type="button">Verify OTP</button></>}</div>
+        <button className="portal-primary wide" disabled={Boolean(busy) || !phoneChangeReady} type="submit">{busy === "profile" ? "Saving…" : "Save pharmacy profile"}</button>
       </form>
     </section>
 
     <section className="portal-panel"><div className="portal-panel-heading"><div><span className="portal-kicker">SETTLEMENT ACCOUNT</span><h2>Bank details</h2><p>The account number is encrypted before storage; only its last four digits are returned.</p></div><Landmark size={22} /></div>
-      {bank && <div className="saved-record"><Landmark size={18} /><div><strong>{bank.bankName} · •••• {bank.accountLast4}</strong><small>{bank.accountName} · {bank.ifscCode}</small></div><Status value={bank.verificationStatus} /></div>}
+      <div className="saved-record"><Landmark size={18} /><div><strong>{bank ? `${bank.bankName} · •••• ${bank.accountLast4}` : "No settlement account submitted"}</strong><small>{setup.bankVerification.message}{bank ? ` · ${bank.accountName} · ${bank.ifscCode}` : ""}</small></div><Status value={setup.bankVerification.status} /></div>
       <form className="portal-form-grid" onSubmit={submitBank}><label className="portal-field"><span>Bank name *</span><input defaultValue={bank?.bankName || ""} name="bankName" required /></label><label className="portal-field"><span>Account name *</span><input defaultValue={bank?.accountName || vendor.businessName} name="accountName" required /></label><label className="portal-field"><span>Account number *</span><input autoComplete="off" inputMode="numeric" maxLength={18} minLength={8} name="accountNumber" pattern="[0-9]{8,18}" required /></label><label className="portal-field"><span>IFSC code *</span><input defaultValue={bank?.ifscCode || ""} maxLength={11} name="ifscCode" pattern="[A-Za-z]{4}0[A-Za-z0-9]{6}" required /></label><button className="portal-secondary wide" disabled={Boolean(busy)} type="submit">{busy === "bank" ? "Encrypting and saving…" : "Save encrypted bank details"}</button></form>
+      <p className="portal-help-note">Submitting new bank details replaces the active settlement record and resets verification to pending. Settlement activation still requires administrator verification.</p>
     </section>
 
-    <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">ACCOUNT SECURITY</span><h2>Change password</h2><p>Use a strong password that is not used for another service.</p></div><LockKeyhole size={21} /></div><form className="portal-form-grid" onSubmit={submitPassword}><label className="portal-field"><span>New password *</span><input autoComplete="new-password" minLength={8} name="password" required type="password" /></label><label className="portal-field"><span>Confirm new password *</span><input autoComplete="new-password" minLength={8} name="confirmPassword" required type="password" /></label><button className="portal-secondary wide" disabled={Boolean(busy)} type="submit">{busy === "password" ? "Changing…" : "Change password securely"}</button></form></section>
+    <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">ACCOUNT SECURITY</span><h2>Change password</h2><p>Request a provider reauthentication code, then use a unique password with at least 12 characters.</p></div><LockKeyhole size={21} /></div><form className="portal-form-grid" onSubmit={submitPassword}><div className="phone-verify-row wide"><button className="portal-outline" disabled={Boolean(busy)} onClick={() => void requestPasswordNonce()} type="button">{busy === "password-reauth" ? "Sending…" : passwordOtpSent ? "Resend reauthentication code" : "Send reauthentication code"}</button>{passwordOtpSent && <label className="portal-field"><span>6-digit reauthentication code *</span><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} onChange={(event) => setPasswordNonce(event.target.value.replace(/\D/g, ""))} required value={passwordNonce} /></label>}</div><label className="portal-field"><span>New password *</span><input autoComplete="new-password" minLength={12} name="password" required type="password" /><small>Use uppercase, lowercase, a number and a symbol.</small></label><label className="portal-field"><span>Confirm new password *</span><input autoComplete="new-password" minLength={12} name="confirmPassword" required type="password" /></label><button className="portal-secondary wide" disabled={Boolean(busy) || !passwordOtpSent || passwordNonce.length !== 6} type="submit">{busy === "password" ? "Changing…" : "Change password securely"}</button></form></section>
 
     <div className="portal-split compliance-forms">
-      <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">DRUG LICENCE</span><h2>Licence verification</h2><p>Supported forms: 20, 21, 20B, 21B, 20F and 21F.</p></div><FileCheck2 size={21} /></div>
-        <form className="portal-form-grid one" onSubmit={submitLicence}><label className="portal-field"><span>Licence number *</span><input name="licenceNumber" required /></label><label className="portal-field"><span>Form *</span><select name="formType" required>{["20", "21", "20B", "21B", "20F", "21F"].map((form) => <option key={form}>{form}</option>)}</select></label><label className="portal-field"><span>Issuing authority *</span><input defaultValue="Drugs Control Administration" name="issuingAuthority" required /></label><label className="portal-field"><span>Issue date</span><input name="issuedOn" type="date" /></label><label className="portal-field"><span>Valid from *</span><input name="validFrom" required type="date" /></label><label className="portal-field"><span>Valid until *</span><input name="validUntil" required type="date" /></label><label className="portal-field"><span>Licence document *</span><div className="file-control"><Upload size={17} /><span>{licenceFile?.name || "Choose JPG, PNG, PDF, DOC or DOCX"}</span><input accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" onChange={(event) => setLicenceFile(event.target.files?.[0] || null)} required type="file" /></div></label><button className="portal-primary wide" disabled={Boolean(busy)} type="submit">{busy === "licence" ? "Validating and uploading…" : "Submit licence for review"}</button></form>
-        <div className="saved-record-list">{licences.map((item) => <div className="saved-record" key={item.id}><FileCheck2 size={17} /><div><strong>{item.licenceNumber} · Form {item.formType}</strong><small>Valid until {item.validUntil} · {item.documentName}</small></div><Status value={item.verificationStatus} /></div>)}</div>
+      <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">DRUG LICENCE</span><h2>Licence renewal and replacement</h2><p>Submit a current replacement before expiry. Forms 20, 21, 20B, 21B, 20F and 21F are supported.</p></div><FileCheck2 size={21} /></div>
+        {currentLicence ? <div className="saved-record"><FileCheck2 size={18} /><div><strong>{currentLicence.licenceNumber} · Form {currentLicence.formType}</strong><small>Valid until {currentLicence.validUntil} · {licenceStateLabels[currentLicenceState!]}</small></div><Status value={currentLicenceState!} /></div> : <div className="saved-record"><AlertTriangle size={18} /><div><strong>No current drug licence</strong><small>Submit a licence document for administrator review.</small></div><Status value="not_submitted" /></div>}
+        <form className="portal-form-grid one" onSubmit={submitLicence}><label className="portal-field"><span>Licence number *</span><input defaultValue={currentLicence?.licenceNumber || ""} name="licenceNumber" required /></label><label className="portal-field"><span>Form *</span><select defaultValue={currentLicence?.formType || "20B"} name="formType" required>{["20", "21", "20B", "21B", "20F", "21F"].map((form) => <option key={form}>{form}</option>)}</select></label><label className="portal-field"><span>Issuing authority *</span><input defaultValue={currentLicence?.issuingAuthority || "Drugs Control Administration"} name="issuingAuthority" required /></label><label className="portal-field"><span>Issue date</span><input name="issuedOn" type="date" /></label><label className="portal-field"><span>Valid from *</span><input name="validFrom" required type="date" /></label><label className="portal-field"><span>Valid until *</span><input min={new Date().toISOString().slice(0, 10)} name="validUntil" required type="date" /></label><label className="portal-field"><span>Replacement licence document *</span><div className="file-control"><Upload size={17} /><span>{licenceFile?.name || "Choose JPG, PNG, PDF, DOC or DOCX"}</span><input accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" onChange={(event) => setLicenceFile(event.target.files?.[0] || null)} required type="file" /></div></label><button className="portal-primary wide" disabled={Boolean(busy)} type="submit">{busy === "licence" ? "Validating and uploading…" : currentLicence ? "Submit replacement for review" : "Submit licence for review"}</button></form>
+        <p className="portal-help-note">A replacement is marked pending until administrator review. The existing verified licence remains in history and is not overwritten when the number changes.</p>
+        <div className="saved-record-list">{licences.map((item) => { const state = licenceDisplayState(item); return <div className="saved-record" key={item.id}><FileCheck2 size={17} /><div><strong>{item.licenceNumber} · Form {item.formType}</strong><small>Valid until {item.validUntil} · {item.documentName}</small></div><Status value={state} /></div>; })}</div>
       </section>
 
       <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">REGISTERED PHARMACIST</span><h2>Pharmacist verification</h2><p>Add the State Pharmacy Council registration used for dispensing.</p></div><UserRoundCheck size={21} /></div>

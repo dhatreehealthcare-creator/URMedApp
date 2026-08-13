@@ -5,10 +5,20 @@ import { encryptSensitiveText } from "../../../../lib/encryption";
 import { requireVendorOnboardingAccess, requireVendorPermission, type VendorPermission } from "../../../../lib/vendor-access";
 import { requireIsoDate } from "../../../../lib/date-controls";
 import { validateVendorRegistration, VendorRegistrationValidationError } from "../../../../lib/vendor-registration";
+import { IdentityConflictError } from "../../../../lib/identity-conflicts";
+import { validateVendorOnboardingDraft, VendorOnboardingDraftError } from "../../../../lib/vendor-onboarding-draft";
 
 const licenceForms = new Set(["20", "21", "20B", "21B", "20F", "21F"]);
 const gstPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 const ifscPattern = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+type SetupVendor = {
+  id: number; businessName: string; ownerName: string; phone: string; landline: string; email: string;
+  gstNumber: string; licenceNumber: string; address: string; latitude: string; longitude: string;
+  homeDelivery: number; approvalStatus: string; complianceStatus: string; deliveryRadiusKm: number;
+  registrationStatus: string; registrationSubmittedAt: string | null; updatedAt: string;
+  emailVerified: number; phoneVerified: number;
+};
 
 function text(value: unknown, maximum: number) {
   return String(value ?? "").trim().slice(0, maximum);
@@ -37,18 +47,26 @@ async function loadSetup(vendorId: number) {
   const db = getD1();
   const vendor = await db.prepare(`
     SELECT v.id, v.business_name AS businessName, v.owner_name AS ownerName, v.phone, v.landline,
-      v.email, v.gst_number AS gstNumber, v.address, v.latitude, v.longitude,
+      v.email, v.gst_number AS gstNumber, v.licence_number AS licenceNumber, v.address, v.latitude, v.longitude,
       v.home_delivery AS homeDelivery, v.approval_status AS approvalStatus,
       v.compliance_status AS complianceStatus, v.delivery_radius_km AS deliveryRadiusKm,
       v.registration_status AS registrationStatus, v.registration_submitted_at AS registrationSubmittedAt,
+      v.updated_at AS updatedAt,
       p.email_verified AS emailVerified, p.phone_verified AS phoneVerified
     FROM vendors v LEFT JOIN account_profiles p ON p.id = v.profile_id WHERE v.id = ? LIMIT 1
-  `).bind(vendorId).first();
+  `).bind(vendorId).first<SetupVendor>();
   const bank = await db.prepare(`
     SELECT id, bank_name AS bankName, account_name AS accountName, account_last4 AS accountLast4,
       ifsc_code AS ifscCode, verification_status AS verificationStatus
     FROM vendor_bank_accounts WHERE vendor_id = ? AND active = 1 ORDER BY id DESC LIMIT 1
-  `).bind(vendorId).first();
+  `).bind(vendorId).first<{
+    id: number;
+    bankName: string;
+    accountName: string;
+    accountLast4: string;
+    ifscCode: string;
+    verificationStatus: string;
+  }>();
   const licences = await db.prepare(`
     SELECT l.id, l.licence_number AS licenceNumber, l.form_type AS formType,
       l.licence_category AS licenceCategory, l.issuing_authority AS issuingAuthority,
@@ -67,7 +85,36 @@ async function loadSetup(vendorId: number) {
     FROM pharmacists p LEFT JOIN stored_documents d ON d.id = p.document_id
     WHERE p.vendor_id = ? ORDER BY p.active DESC, p.id DESC LIMIT 20
   `).bind(vendorId).all();
-  return { vendor, bank, licences: licences.results, pharmacists: pharmacists.results };
+  return {
+    vendor,
+    registrationDraft: vendor?.registrationStatus === "draft" ? {
+      businessName: vendor.businessName,
+      ownerName: vendor.ownerName,
+      landline: vendor.landline,
+      gstNumber: vendor.gstNumber,
+      address: vendor.address,
+      latitude: vendor.latitude,
+      longitude: vendor.longitude,
+      homeDelivery: Boolean(vendor.homeDelivery),
+      deliveryRadiusKm: vendor.deliveryRadiusKm,
+      licenceNumber: vendor.licenceNumber,
+      savedAt: vendor.updatedAt,
+    } : null,
+    bank,
+    bankVerification: bank ? {
+      status: String(bank.verificationStatus ?? "pending"),
+      message: bank.verificationStatus === "verified"
+        ? "Settlement account verified"
+        : bank.verificationStatus === "rejected"
+          ? "Settlement account needs correction and resubmission"
+          : "Settlement account is awaiting administrator verification",
+    } : {
+      status: "not_submitted",
+      message: "Add a settlement account for administrator verification",
+    },
+    licences: licences.results,
+    pharmacists: pharmacists.results,
+  };
 }
 
 export async function GET(request: Request) {
@@ -83,7 +130,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
     const action = text(body.action, 40);
-    const access = action === "registration"
+    const access = ["registration", "registration_draft", "licence", "pharmacist"].includes(action)
       ? await requireVendorOnboardingAccess(request)
       : await requireVendorPermission(
         request,
@@ -92,7 +139,29 @@ export async function POST(request: Request) {
     const { profile, vendorId } = access;
     const db = getD1();
 
-    if (action === "registration") {
+    if (action === "registration_draft") {
+      let draft;
+      try {
+        draft = validateVendorOnboardingDraft(body);
+      } catch (error) {
+        if (error instanceof VendorOnboardingDraftError) return Response.json({ error: error.message }, { status: 400 });
+        throw error;
+      }
+      const before = await db.prepare("SELECT * FROM vendors WHERE id = ? LIMIT 1").bind(vendorId).first();
+      const result = await db.prepare(`UPDATE vendors SET business_name=?,owner_name=?,landline=?,gst_number=?,licence_number=?,
+        address=?,latitude=?,longitude=?,home_delivery=?,delivery_radius_km=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND registration_status='draft'`).bind(
+        draft.businessName, draft.ownerName, draft.landline, draft.gstNumber, draft.licenceNumber,
+        draft.address, draft.latitude, draft.longitude, draft.homeDelivery ? 1 : 0,
+        draft.deliveryRadiusKm, vendorId,
+      ).run();
+      if (!Number(result.meta.changes)) return Response.json({ error: "A submitted registration cannot be replaced by a draft" }, { status: 409 });
+      await db.prepare("UPDATE account_profiles SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(draft.ownerName, profile.id).run();
+      await appendAuditEvent({
+        vendorId, actorProfileId: profile.id, action: "vendor.registration.draft.saved", entityType: "vendor",
+        entityId: vendorId, before, after: draft, requestId: request.headers.get("cf-ray") ?? "",
+      });
+    } else if (action === "registration") {
       let registration;
       try {
         registration = validateVendorRegistration(body);
@@ -110,7 +179,7 @@ export async function POST(request: Request) {
         SELECT id FROM account_profiles WHERE phone = ? AND id <> ?
         UNION SELECT profile_id AS id FROM vendors WHERE phone = ? AND id <> ? LIMIT 1
       `).bind(registration.phone, profile.id, registration.phone, vendorId).first();
-      if (duplicate) return Response.json({ error: "This phone number is already registered" }, { status: 409 });
+      if (duplicate) throw new IdentityConflictError(["phone"]);
       const documentId = await verifiedVendorDocument(vendorId, registration.documentId, "drug_licence");
       const before = await db.prepare("SELECT * FROM vendors WHERE id = ? LIMIT 1").bind(vendorId).first();
       await db.batch([
@@ -160,7 +229,7 @@ export async function POST(request: Request) {
         SELECT id FROM account_profiles WHERE phone = ? AND id <> ?
         UNION SELECT profile_id AS id FROM vendors WHERE phone = ? AND id <> ? LIMIT 1
       `).bind(phone, profile.id, phone, vendorId).first();
-      if (duplicate) return Response.json({ error: "This phone number is already registered" }, { status: 409 });
+      if (duplicate) throw new IdentityConflictError(["phone"]);
       await db.batch([
         db.prepare(`UPDATE vendors SET business_name = ?, owner_name = ?, phone = ?, landline = ?, gst_number = ?,
           address = ?, latitude = ?, longitude = ?, home_delivery = ?, delivery_radius_km = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -175,13 +244,17 @@ export async function POST(request: Request) {
       const ifscCode = text(body.ifscCode, 11).toUpperCase();
       if (!bankName || !accountName || !/^\d{8,18}$/.test(accountNumber) || !ifscPattern.test(ifscCode)) return Response.json({ error: "Enter a valid bank, account name, 8–18 digit account number and IFSC" }, { status: 400 });
       const encrypted = await encryptSensitiveText(accountNumber);
-      await db.batch([
+      const before = await db.prepare(`SELECT id, bank_name AS bankName, account_name AS accountName,
+        account_last4 AS accountLast4, ifsc_code AS ifscCode, verification_status AS verificationStatus
+        FROM vendor_bank_accounts WHERE vendor_id = ? AND active = 1 ORDER BY id DESC LIMIT 1`).bind(vendorId).first();
+      const results = await db.batch([
         db.prepare("UPDATE vendor_bank_accounts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE vendor_id = ? AND active = 1").bind(vendorId),
         db.prepare(`INSERT INTO vendor_bank_accounts (vendor_id, bank_name, account_name, account_number_encrypted,
           account_last4, ifsc_code, verification_status, active) VALUES (?, ?, ?, ?, ?, ?, 'pending', 1)`)
           .bind(vendorId, bankName, accountName, encrypted, accountNumber.slice(-4), ifscCode),
       ]);
-      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "vendor.bank.updated", entityType: "vendor_bank_account", entityId: vendorId, after: { bankName, accountName, accountLast4: accountNumber.slice(-4), ifscCode }, requestId: request.headers.get("cf-ray") ?? "" });
+      const bankAccountId = Number(results[1].meta.last_row_id);
+      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "vendor.bank.updated", entityType: "vendor_bank_account", entityId: bankAccountId, before, after: { bankName, accountName, accountLast4: accountNumber.slice(-4), ifscCode, verificationStatus: "pending" }, requestId: request.headers.get("cf-ray") ?? "" });
     } else if (action === "licence") {
       const licenceNumber = text(body.licenceNumber, 80).toUpperCase();
       const formType = text(body.formType, 8).toUpperCase();
@@ -191,8 +264,11 @@ export async function POST(request: Request) {
       const issuedOn = isoDate(body.issuedOn, "Licence issue date", false);
       if (!licenceNumber || !licenceForms.has(formType) || !issuingAuthority) return Response.json({ error: "Licence number, approved form type and issuing authority are required" }, { status: 400 });
       if (validUntil < validFrom) return Response.json({ error: "Licence expiry must be after the valid-from date" }, { status: 400 });
+      if (validUntil < new Date().toISOString().slice(0, 10)) return Response.json({ error: "A replacement licence must not already be expired" }, { status: 400 });
       const documentId = await verifiedVendorDocument(vendorId, body.documentId, "drug_licence");
-      await db.prepare(`
+      const before = await db.prepare("SELECT * FROM vendor_licences WHERE vendor_id = ? AND licence_number = ? LIMIT 1")
+        .bind(vendorId, licenceNumber).first<{ id: number }>();
+      const licenceResult = await db.prepare(`
         INSERT INTO vendor_licences (vendor_id, licence_number, form_type, licence_category, issuing_authority,
           issued_on, valid_from, valid_until, document_id, verification_status)
         VALUES (?, ?, ?, 'retail', ?, ?, ?, ?, ?, 'pending')
@@ -202,8 +278,15 @@ export async function POST(request: Request) {
           document_id = excluded.document_id, verification_status = 'pending', suspended_at = NULL,
           updated_at = CURRENT_TIMESTAMP
       `).bind(vendorId, licenceNumber, formType, issuingAuthority, issuedOn, validFrom, validUntil, documentId).run();
-      await db.prepare("UPDATE vendors SET licence_number = ?, compliance_status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(licenceNumber, vendorId).run();
-      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "vendor.licence.submitted", entityType: "vendor_licence", entityId: licenceNumber, after: { formType, issuingAuthority, issuedOn, validFrom, validUntil, documentId }, requestId: request.headers.get("cf-ray") ?? "" });
+      await db.prepare(`UPDATE vendors SET licence_number = ?,
+        compliance_status = CASE WHEN EXISTS(
+          SELECT 1 FROM vendor_licences current_licence
+          WHERE current_licence.vendor_id = vendors.id
+            AND current_licence.verification_status = 'verified'
+            AND current_licence.valid_until >= date('now')
+        ) THEN compliance_status ELSE 'pending' END,
+        updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(licenceNumber, vendorId).run();
+      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: before ? "vendor.licence.replacement_submitted" : "vendor.licence.submitted", entityType: "vendor_licence", entityId: before?.id ?? Number(licenceResult.meta.last_row_id), before, after: { licenceNumber, formType, issuingAuthority, issuedOn, validFrom, validUntil, documentId, verificationStatus: "pending" }, requestId: request.headers.get("cf-ray") ?? "" });
     } else if (action === "pharmacist") {
       const fullName = text(body.fullName, 140);
       const councilName = text(body.councilName, 180);

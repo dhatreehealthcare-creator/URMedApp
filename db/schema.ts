@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const categories = sqliteTable("categories", {
   id: integer("id").primaryKey(),
@@ -7,12 +7,98 @@ export const categories = sqliteTable("categories", {
   status: text("status").notNull().default("active"),
 });
 
+// Governed pharmaceutical dosage forms are intentionally separate from
+// commercial product categories. Products will gain the normalized foreign
+// key as part of the structured product/variant work in P2-02.
+export const dosageForms = sqliteTable("dosage_forms", {
+  id: integer("id").primaryKey(),
+  code: text("code").notNull(),
+  slug: text("slug").notNull(),
+  name: text("name").notNull(),
+  status: text("status", { enum: ["active", "inactive"] }).notNull().default("active"),
+  sortOrder: integer("sort_order").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("dosage_forms_code_uidx").on(table.code),
+  uniqueIndex("dosage_forms_slug_uidx").on(table.slug),
+  uniqueIndex("dosage_forms_name_uidx").on(table.name),
+  uniqueIndex("dosage_forms_sort_order_uidx").on(table.sortOrder),
+]);
+
 export const manufacturers = sqliteTable("manufacturers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   normalizedName: text("normalized_name").notNull(),
 }, (table) => [
   uniqueIndex("manufacturers_normalized_name_uidx").on(table.normalizedName),
+]);
+
+// Manufacturer identity stays on the recovered manufacturers table. Governance
+// state and aliases are separate so recovered IDs/names remain traceable while
+// every live product continues to use manufacturer_id as its canonical key.
+export const manufacturerCanonicalState = sqliteTable("manufacturer_canonical_state", {
+  manufacturerId: integer("manufacturer_id").primaryKey().references(() => manufacturers.id),
+  status: text("status", { enum: ["active", "merged", "inactive"] }).notNull().default("active"),
+  mergedIntoManufacturerId: integer("merged_into_manufacturer_id").references(() => manufacturers.id),
+  source: text("source", { enum: ["recovered_catalogue", "governed_creation"] }).notNull().default("recovered_catalogue"),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("manufacturer_canonical_state_status_idx").on(table.status, table.updatedAt),
+  index("manufacturer_canonical_state_merge_idx").on(table.mergedIntoManufacturerId),
+  check("manufacturer_canonical_state_merge_check", sql`(${table.status} = 'merged' AND ${table.mergedIntoManufacturerId} IS NOT NULL AND ${table.manufacturerId} <> ${table.mergedIntoManufacturerId}) OR (${table.status} <> 'merged' AND ${table.mergedIntoManufacturerId} IS NULL)`),
+]);
+
+export const manufacturerAliases = sqliteTable("manufacturer_aliases", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  manufacturerId: integer("manufacturer_id").notNull().references(() => manufacturers.id),
+  aliasName: text("alias_name").notNull(),
+  normalizedAlias: text("normalized_alias").notNull(),
+  provenance: text("provenance", { enum: ["recovered_catalogue", "governed_creation", "rename", "merge"] }).notNull(),
+  sourceManufacturerId: integer("source_manufacturer_id").references(() => manufacturers.id),
+  createdByProfileId: integer("created_by_profile_id").references(() => accountProfiles.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("manufacturer_aliases_normalized_uidx").on(table.normalizedAlias),
+  index("manufacturer_aliases_manufacturer_idx").on(table.manufacturerId, table.createdAt),
+]);
+
+export const manufacturerChangeRequests = sqliteTable("manufacturer_change_requests", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  requestType: text("request_type", { enum: ["new", "rename", "merge"] }).notNull(),
+  submittedVendorId: integer("submitted_vendor_id").notNull().references(() => vendors.id),
+  createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  manufacturerId: integer("manufacturer_id").references(() => manufacturers.id),
+  targetManufacturerId: integer("target_manufacturer_id").references(() => manufacturers.id),
+  proposedName: text("proposed_name").notNull().default(""),
+  normalizedProposedName: text("normalized_proposed_name").notNull().default(""),
+  status: text("status", { enum: ["pending", "approved", "rejected", "withdrawn"] }).notNull().default("pending"),
+  reviewedByProfileId: integer("reviewed_by_profile_id").references(() => accountProfiles.id),
+  reviewReason: text("review_reason").notNull().default(""),
+  reviewedAt: text("reviewed_at"),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("manufacturer_change_requests_queue_idx").on(table.status, table.updatedAt),
+  index("manufacturer_change_requests_vendor_idx").on(table.submittedVendorId, table.status, table.updatedAt),
+  check("manufacturer_change_requests_pair_check", sql`${table.manufacturerId} IS NULL OR ${table.targetManufacturerId} IS NULL OR ${table.manufacturerId} <> ${table.targetManufacturerId}`),
+]);
+
+export const manufacturerGovernanceEvents = sqliteTable("manufacturer_governance_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  requestId: integer("request_id").notNull().references(() => manufacturerChangeRequests.id),
+  eventType: text("event_type", { enum: ["approved_new", "approved_rename", "approved_merge", "rejected", "withdrawn"] }).notNull(),
+  actorProfileId: integer("actor_profile_id").notNull().references(() => accountProfiles.id),
+  manufacturerId: integer("manufacturer_id").references(() => manufacturers.id),
+  targetManufacturerId: integer("target_manufacturer_id").references(() => manufacturers.id),
+  detailJson: text("detail_json").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("manufacturer_governance_events_request_type_uidx").on(table.requestId, table.eventType),
+  index("manufacturer_governance_events_manufacturer_idx").on(table.manufacturerId, table.createdAt),
 ]);
 
 export const products = sqliteTable("products", {
@@ -24,6 +110,16 @@ export const products = sqliteTable("products", {
   normalizedName: text("normalized_name").notNull(),
   composition: text("composition").notNull().default(""),
   manufacturer: text("manufacturer").notNull().default(""),
+  manufacturerId: integer("manufacturer_id").references(() => manufacturers.id),
+  dosageFormId: integer("dosage_form_id").references(() => dosageForms.id),
+  strengthValue: text("strength_value"),
+  strengthUnit: text("strength_unit"),
+  packType: text("pack_type"),
+  packSizeValue: text("pack_size_value"),
+  packSizeUnit: text("pack_size_unit"),
+  dispensingUom: text("dispensing_uom"),
+  normalizedGenericName: text("normalized_generic_name").notNull().default(""),
+  normalizedTradeName: text("normalized_trade_name").notNull().default(""),
   prescriptionRequired: integer("prescription_required", { mode: "boolean" }).notNull().default(false),
   gstPercent: integer("gst_percent").notNull().default(0),
   hsnCode: text("hsn_code").notNull().default(""),
@@ -34,6 +130,7 @@ export const products = sqliteTable("products", {
   drugSchedule: text("drug_schedule", { enum: ["OTC", "G", "H", "H1", "X", "NDPS", "UNCLASSIFIED"] }).notNull().default("UNCLASSIFIED"),
   coldChainRequired: integer("cold_chain_required", { mode: "boolean" }).notNull().default(false),
   nppaCeilingPaise: integer("nppa_ceiling_paise"),
+  governanceStatus: text("governance_status", { enum: ["pending", "approved", "rejected", "inactive", "withdrawn"] }).notNull().default("pending"),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
   source: text("source").notNull().default("legacy_backup"),
   migratedAt: text("migrated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -43,6 +140,16 @@ export const products = sqliteTable("products", {
   index("products_normalized_name_idx").on(table.normalizedName),
   index("products_category_idx").on(table.categoryId),
   index("products_manufacturer_idx").on(table.manufacturer),
+  index("products_manufacturer_id_idx").on(table.manufacturerId),
+  index("products_dosage_form_idx").on(table.dosageFormId),
+  index("products_governance_idx").on(table.governanceStatus, table.active),
+  index("products_equivalence_idx").on(
+    table.normalizedGenericName,
+    table.dosageFormId,
+    table.strengthValue,
+    table.strengthUnit,
+    table.governanceStatus,
+  ),
 ]);
 
 // Immutable legacy-import archive. This table is not an authentication or live
@@ -96,7 +203,9 @@ export const accountProfiles = sqliteTable("account_profiles", {
 }, (table) => [
   uniqueIndex("account_profiles_auth_user_uidx").on(table.authUserId),
   index("account_profiles_role_idx").on(table.role),
-  index("account_profiles_email_idx").on(table.email),
+  uniqueIndex("account_profiles_normalized_email_uidx")
+    .on(sql`lower(trim(${table.email}))`)
+    .where(sql`trim(${table.email}) <> ''`),
   uniqueIndex("account_profiles_phone_uidx").on(table.phone).where(sql`${table.phone} <> ''`),
 ]);
 
@@ -156,6 +265,28 @@ export const vendors = sqliteTable("vendors", {
   index("vendors_approval_idx").on(table.approvalStatus),
 ]);
 
+// An explicit customer-facing pickup/service point. This record is never
+// backfilled from the vendor's private legal address or coordinates.
+export const vendorPublicLocations = sqliteTable("vendor_public_locations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  label: text("label").notNull().default("Pharmacy pickup point"),
+  address: text("address").notNull(),
+  latitude: text("latitude").notNull(),
+  longitude: text("longitude").notNull(),
+  pickupEnabled: integer("pickup_enabled", { mode: "boolean" }).notNull().default(false),
+  serviceEnabled: integer("service_enabled", { mode: "boolean" }).notNull().default(false),
+  serviceRadiusKm: integer("service_radius_km").notNull().default(5),
+  publicationStatus: text("publication_status", { enum: ["draft", "published"] }).notNull().default("draft"),
+  publicationConsentAt: text("publication_consent_at"),
+  publishedAt: text("published_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("vendor_public_locations_vendor_uidx").on(table.vendorId),
+  index("vendor_public_locations_publication_idx").on(table.publicationStatus, table.vendorId),
+]);
+
 export const pharmacyInventory = sqliteTable("pharmacy_inventory", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
@@ -182,6 +313,84 @@ export const pharmacyInventory = sqliteTable("pharmacy_inventory", {
   uniqueIndex("pharmacy_inventory_batch_uidx").on(table.vendorId, table.productId, table.batchNumber),
   index("pharmacy_inventory_product_idx").on(table.productId, table.active, table.quantity),
   index("pharmacy_inventory_vendor_idx").on(table.vendorId),
+]);
+
+export const inventoryAdjustmentReasonCodes = sqliteTable("inventory_adjustment_reason_codes", {
+  code: text("code").primaryKey(),
+  label: text("label").notNull(),
+  direction: text("direction", { enum: ["increase", "decrease", "both"] }).notNull(),
+  requiresNotes: integer("requires_notes", { mode: "boolean" }).notNull().default(true),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("inventory_adjustment_reasons_label_uidx").on(table.label),
+  index("inventory_adjustment_reasons_active_idx").on(table.active, table.sortOrder),
+  check("inventory_adjustment_reasons_direction_check", sql`${table.direction} IN ('increase', 'decrease', 'both')`),
+]);
+
+export const inventoryCountSessions = sqliteTable("inventory_count_sessions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  sessionNumber: text("session_number").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  scopeLabel: text("scope_label").notNull(),
+  notes: text("notes").notNull().default(""),
+  status: text("status", { enum: ["completed"] }).notNull().default("completed"),
+  lineCount: integer("line_count").notNull(),
+  varianceLineCount: integer("variance_line_count").notNull(),
+  netVarianceQuantity: integer("net_variance_quantity").notNull(),
+  completedByProfileId: integer("completed_by_profile_id").notNull().references(() => accountProfiles.id),
+  completedAt: text("completed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("inventory_count_sessions_number_uidx").on(table.sessionNumber),
+  uniqueIndex("inventory_count_sessions_vendor_key_uidx").on(table.vendorId, table.idempotencyKey),
+  index("inventory_count_sessions_vendor_date_idx").on(table.vendorId, table.completedAt),
+  check("inventory_count_sessions_counts_check", sql`${table.lineCount} > 0 AND ${table.varianceLineCount} >= 0 AND ${table.varianceLineCount} <= ${table.lineCount}`),
+]);
+
+export const inventoryCountLines = sqliteTable("inventory_count_lines", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  countSessionId: integer("count_session_id").notNull().references(() => inventoryCountSessions.id),
+  inventoryId: integer("inventory_id").notNull().references(() => pharmacyInventory.id),
+  expectedQuantity: integer("expected_quantity").notNull(),
+  countedQuantity: integer("counted_quantity").notNull(),
+  varianceQuantity: integer("variance_quantity").notNull(),
+  reservedQuantitySnapshot: integer("reserved_quantity_snapshot").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("inventory_count_lines_session_inventory_uidx").on(table.countSessionId, table.inventoryId),
+  index("inventory_count_lines_inventory_idx").on(table.inventoryId, table.createdAt),
+  check("inventory_count_lines_quantity_check", sql`${table.expectedQuantity} >= 0 AND ${table.countedQuantity} >= 0 AND ${table.reservedQuantitySnapshot} >= 0 AND ${table.varianceQuantity} = ${table.countedQuantity} - ${table.expectedQuantity}`),
+]);
+
+export const inventoryAdjustments = sqliteTable("inventory_adjustments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  adjustmentNumber: text("adjustment_number").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  inventoryId: integer("inventory_id").notNull().references(() => pharmacyInventory.id),
+  sourceType: text("source_type", { enum: ["manual", "cycle_count"] }).notNull(),
+  sourceId: integer("source_id").references(() => inventoryCountSessions.id),
+  reasonCode: text("reason_code").notNull().references(() => inventoryAdjustmentReasonCodes.code),
+  reasonLabel: text("reason_label").notNull(),
+  expectedQuantity: integer("expected_quantity").notNull(),
+  quantityBefore: integer("quantity_before").notNull(),
+  quantityDelta: integer("quantity_delta").notNull(),
+  balanceAfter: integer("balance_after").notNull(),
+  reservedQuantitySnapshot: integer("reserved_quantity_snapshot").notNull(),
+  notes: text("notes").notNull().default(""),
+  createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("inventory_adjustments_number_uidx").on(table.adjustmentNumber),
+  uniqueIndex("inventory_adjustments_vendor_key_uidx").on(table.vendorId, table.idempotencyKey),
+  index("inventory_adjustments_vendor_date_idx").on(table.vendorId, table.createdAt),
+  index("inventory_adjustments_inventory_date_idx").on(table.inventoryId, table.createdAt),
+  index("inventory_adjustments_source_idx").on(table.sourceType, table.sourceId),
+  check("inventory_adjustments_quantity_check", sql`${table.expectedQuantity} >= 0 AND ${table.quantityBefore} = ${table.expectedQuantity} AND ${table.quantityDelta} <> 0 AND ${table.balanceAfter} = ${table.quantityBefore} + ${table.quantityDelta} AND ${table.balanceAfter} >= 0 AND ${table.reservedQuantitySnapshot} >= 0`),
+  check("inventory_adjustments_source_check", sql`(${table.sourceType} = 'manual' AND ${table.sourceId} IS NULL) OR (${table.sourceType} = 'cycle_count' AND ${table.sourceId} IS NOT NULL)`),
 ]);
 
 export const customerAddresses = sqliteTable("customer_addresses", {
@@ -401,11 +610,23 @@ export const vendorLicences = sqliteTable("vendor_licences", {
 ]);
 
 export const productAlternates = sqliteTable("product_alternates", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
   productId: integer("product_id").notNull().references(() => products.id),
   alternateProductId: integer("alternate_product_id").notNull().references(() => products.id),
+  submittedVendorId: integer("submitted_vendor_id").references(() => vendors.id),
   createdByProfileId: integer("created_by_profile_id").references(() => accountProfiles.id),
+  governanceStatus: text("governance_status", { enum: ["pending", "approved", "rejected", "inactive", "withdrawn"] }).notNull().default("pending"),
+  reviewedByProfileId: integer("reviewed_by_profile_id").references(() => accountProfiles.id),
+  reviewReason: text("review_reason").notNull().default(""),
+  reviewedAt: text("reviewed_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [uniqueIndex("product_alternates_pair_uidx").on(table.productId, table.alternateProductId)]);
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("product_alternates_pair_uidx").on(table.productId, table.alternateProductId),
+  index("product_alternates_governance_idx").on(table.governanceStatus, table.updatedAt),
+  index("product_alternates_vendor_status_idx").on(table.submittedVendorId, table.governanceStatus, table.updatedAt),
+  check("product_alternates_canonical_pair_check", sql`${table.productId} < ${table.alternateProductId}`),
+]);
 
 export const productCeilingPrices = sqliteTable("product_ceiling_prices", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -447,8 +668,13 @@ export const purchaseOrders = sqliteTable("purchase_orders", {
   taxPaise: integer("tax_paise").notNull().default(0),
   totalPaise: integer("total_paise").notNull().default(0),
   paymentStatus: text("payment_status").notNull().default("unpaid"),
-  status: text("status", { enum: ["draft", "posting", "received"] }).notNull().default("draft"),
+  status: text("status", { enum: ["draft", "approved", "partially_received", "received", "cancelled"] }).notNull().default("draft"),
   createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
+  approvedByProfileId: integer("approved_by_profile_id").references(() => accountProfiles.id),
+  approvedAt: text("approved_at"),
+  cancelledByProfileId: integer("cancelled_by_profile_id").references(() => accountProfiles.id),
+  cancelledAt: text("cancelled_at"),
+  cancellationReason: text("cancellation_reason").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   postedAt: text("posted_at"),
 }, (table) => [
@@ -475,7 +701,37 @@ export const purchaseOrderItems = sqliteTable("purchase_order_items", {
   taxablePaise: integer("taxable_paise").notNull(),
   taxPaise: integer("tax_paise").notNull(),
   lineTotalPaise: integer("line_total_paise").notNull(),
+  receivedQuantity: integer("received_quantity").notNull().default(0),
+  receivedFreeQuantity: integer("received_free_quantity").notNull().default(0),
 }, (table) => [index("purchase_order_items_purchase_idx").on(table.purchaseOrderId)]);
+
+export const purchaseReceipts = sqliteTable("purchase_receipts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  receiptNumber: text("receipt_number").notNull(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  purchaseOrderId: integer("purchase_order_id").notNull().references(() => purchaseOrders.id),
+  receivedOn: text("received_on").notNull(),
+  notes: text("notes").notNull().default(""),
+  receivedByProfileId: integer("received_by_profile_id").notNull().references(() => accountProfiles.id),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("purchase_receipts_number_uidx").on(table.receiptNumber),
+  index("purchase_receipts_order_idx").on(table.purchaseOrderId, table.createdAt),
+  index("purchase_receipts_vendor_date_idx").on(table.vendorId, table.receivedOn),
+]);
+
+export const purchaseReceiptItems = sqliteTable("purchase_receipt_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  purchaseReceiptId: integer("purchase_receipt_id").notNull().references(() => purchaseReceipts.id),
+  purchaseOrderItemId: integer("purchase_order_item_id").notNull().references(() => purchaseOrderItems.id),
+  inventoryId: integer("inventory_id").notNull().references(() => pharmacyInventory.id),
+  quantity: integer("quantity").notNull(),
+  freeQuantity: integer("free_quantity").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("purchase_receipt_items_receipt_order_item_uidx").on(table.purchaseReceiptId, table.purchaseOrderItemId),
+  index("purchase_receipt_items_order_item_idx").on(table.purchaseOrderItemId),
+]);
 
 export const supplierReturns = sqliteTable("supplier_returns", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -563,23 +819,97 @@ export const prescriptionReviews = sqliteTable("prescription_reviews", {
   reviewedAt: text("reviewed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("prescription_reviews_prescription_idx").on(table.prescriptionId, table.reviewedAt)]);
 
+// Counter prescriptions are deliberately separate from customer-uploaded
+// online prescriptions. A walk-in patient does not need a fabricated account,
+// while an exact verified live customer may still be linked explicitly.
+export const offlinePrescriptions = sqliteTable("offline_prescriptions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  captureNumber: text("capture_number").notNull(),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  customerProfileId: integer("customer_profile_id").references(() => accountProfiles.id),
+  documentId: integer("document_id").notNull().references(() => storedDocuments.id),
+  patientName: text("patient_name").notNull(),
+  patientAddress: text("patient_address").notNull(),
+  prescriberName: text("prescriber_name").notNull(),
+  prescriberAddress: text("prescriber_address").notNull(),
+  prescribedOn: text("prescribed_on").notNull(),
+  serialNumber: text("serial_number").notNull().default(""),
+  status: text("status", { enum: ["uploaded", "approved", "rejected", "clarification_required"] }).notNull().default("uploaded"),
+  rejectionReason: text("rejection_reason").notNull().default(""),
+  capturedByProfileId: integer("captured_by_profile_id").notNull().references(() => accountProfiles.id),
+  reviewedAt: text("reviewed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("offline_prescriptions_number_uidx").on(table.captureNumber),
+  uniqueIndex("offline_prescriptions_document_uidx").on(table.documentId),
+  index("offline_prescriptions_vendor_status_idx").on(table.vendorId, table.status, table.createdAt),
+  index("offline_prescriptions_customer_idx").on(table.customerProfileId, table.createdAt),
+]);
+
+export const offlinePrescriptionItems = sqliteTable("offline_prescription_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  offlinePrescriptionId: integer("offline_prescription_id").notNull().references(() => offlinePrescriptions.id),
+  productId: integer("product_id").notNull().references(() => products.id),
+  medicineText: text("medicine_text").notNull(),
+  quantityRequested: integer("quantity_requested").notNull(),
+}, (table) => [
+  uniqueIndex("offline_prescription_items_capture_product_uidx").on(table.offlinePrescriptionId, table.productId),
+  check("offline_prescription_items_quantity_check", sql`${table.quantityRequested} > 0`),
+]);
+
+export const offlinePrescriptionReviews = sqliteTable("offline_prescription_reviews", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  offlinePrescriptionId: integer("offline_prescription_id").notNull().references(() => offlinePrescriptions.id),
+  pharmacistId: integer("pharmacist_id").notNull().references(() => pharmacists.id),
+  decision: text("decision", { enum: ["approved", "rejected", "clarification_required"] }).notNull(),
+  notes: text("notes").notNull().default(""),
+  reviewedAt: text("reviewed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("offline_prescription_reviews_capture_uidx").on(table.offlinePrescriptionId),
+  index("offline_prescription_reviews_pharmacist_idx").on(table.pharmacistId, table.reviewedAt),
+]);
+
+export const offlinePrescriptionReviewItems = sqliteTable("offline_prescription_review_items", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  reviewId: integer("review_id").notNull().references(() => offlinePrescriptionReviews.id),
+  productId: integer("product_id").notNull().references(() => products.id),
+  quantityApproved: integer("quantity_approved").notNull(),
+}, (table) => [
+  uniqueIndex("offline_prescription_review_items_review_product_uidx").on(table.reviewId, table.productId),
+  check("offline_prescription_review_items_quantity_check", sql`${table.quantityApproved} > 0`),
+]);
+
 export const offlineSales = sqliteTable("offline_sales", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   saleNumber: text("sale_number").notNull(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  customerProfileId: integer("customer_profile_id").references(() => accountProfiles.id),
   customerName: text("customer_name").notNull().default("Walk-in customer"),
   customerPhone: text("customer_phone").notNull().default(""),
   prescriptionId: integer("prescription_id").references(() => prescriptions.id),
+  offlinePrescriptionId: integer("offline_prescription_id").references(() => offlinePrescriptions.id),
+  idempotencyKey: text("idempotency_key").notNull().default(""),
+  requestFingerprint: text("request_fingerprint").notNull().default(""),
+  grossPaise: integer("gross_paise").notNull().default(0),
   subtotalPaise: integer("subtotal_paise").notNull(),
   taxPaise: integer("tax_paise").notNull(),
   discountPaise: integer("discount_paise").notNull().default(0),
+  cgstPaise: integer("cgst_paise").notNull().default(0),
+  sgstPaise: integer("sgst_paise").notNull().default(0),
+  igstPaise: integer("igst_paise").notNull().default(0),
   totalPaise: integer("total_paise").notNull(),
   paymentMode: text("payment_mode").notNull(),
+  buyerGstin: text("buyer_gstin").notNull().default(""),
+  placeOfSupplyStateCode: text("place_of_supply_state_code").notNull().default("00"),
   createdByProfileId: integer("created_by_profile_id").notNull().references(() => accountProfiles.id),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("offline_sales_number_uidx").on(table.saleNumber),
+  uniqueIndex("offline_sales_vendor_idempotency_uidx").on(table.vendorId, table.idempotencyKey).where(sql`${table.idempotencyKey} <> ''`),
+  uniqueIndex("offline_sales_prescription_uidx").on(table.offlinePrescriptionId).where(sql`${table.offlinePrescriptionId} IS NOT NULL`),
   index("offline_sales_vendor_date_idx").on(table.vendorId, table.createdAt),
+  check("offline_sales_payment_mode_check", sql`${table.paymentMode} IN ('cash', 'upi', 'card', 'credit')`),
+  check("offline_sales_amounts_check", sql`${table.grossPaise} >= 0 AND ${table.discountPaise} >= 0 AND ${table.subtotalPaise} >= 0 AND ${table.taxPaise} >= 0 AND ${table.cgstPaise} >= 0 AND ${table.sgstPaise} >= 0 AND ${table.igstPaise} >= 0 AND ${table.totalPaise} >= 0`),
 ]);
 
 export const offlineSaleItems = sqliteTable("offline_sale_items", {
@@ -590,12 +920,39 @@ export const offlineSaleItems = sqliteTable("offline_sale_items", {
   batchNumber: text("batch_number").notNull(),
   expiryDate: text("expiry_date").notNull(),
   quantity: integer("quantity").notNull(),
+  productName: text("product_name").notNull().default(""),
   unitPricePaise: integer("unit_price_paise").notNull(),
   gstPercent: integer("gst_percent").notNull(),
+  hsnCode: text("hsn_code").notNull().default(""),
+  mrpPaise: integer("mrp_paise").notNull().default(0),
+  discountPaise: integer("discount_paise").notNull().default(0),
+  cgstPaise: integer("cgst_paise").notNull().default(0),
+  sgstPaise: integer("sgst_paise").notNull().default(0),
+  igstPaise: integer("igst_paise").notNull().default(0),
+  prescriptionRequired: integer("prescription_required", { mode: "boolean" }).notNull().default(false),
+  drugSchedule: text("drug_schedule", { enum: ["OTC", "G", "H", "H1", "X", "NDPS", "UNCLASSIFIED"] }).notNull().default("UNCLASSIFIED"),
   taxablePaise: integer("taxable_paise").notNull(),
   taxPaise: integer("tax_paise").notNull(),
   lineTotalPaise: integer("line_total_paise").notNull(),
-}, (table) => [index("offline_sale_items_sale_idx").on(table.offlineSaleId)]);
+}, (table) => [
+  uniqueIndex("offline_sale_items_sale_inventory_uidx").on(table.offlineSaleId, table.inventoryId),
+  index("offline_sale_items_sale_idx").on(table.offlineSaleId),
+  check("offline_sale_items_amount_check", sql`${table.quantity} > 0 AND ${table.unitPricePaise} > 0 AND ${table.mrpPaise} >= 0 AND ${table.discountPaise} >= 0 AND ${table.taxablePaise} >= 0 AND ${table.taxPaise} >= 0 AND ${table.cgstPaise} >= 0 AND ${table.sgstPaise} >= 0 AND ${table.igstPaise} >= 0 AND ${table.lineTotalPaise} >= 0`),
+]);
+
+export const offlineSaleEvents = sqliteTable("offline_sale_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  offlineSaleId: integer("offline_sale_id").notNull().references(() => offlineSales.id),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  eventType: text("event_type", { enum: ["completed"] }).notNull(),
+  actorProfileId: integer("actor_profile_id").notNull().references(() => accountProfiles.id),
+  requestFingerprint: text("request_fingerprint").notNull(),
+  evidenceJson: text("evidence_json").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("offline_sale_events_sale_type_uidx").on(table.offlineSaleId, table.eventType),
+  index("offline_sale_events_vendor_date_idx").on(table.vendorId, table.createdAt),
+]);
 
 export const salesReturns = sqliteTable("sales_returns", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -621,26 +978,98 @@ export const salesReturnItems = sqliteTable("sales_return_items", {
   amountPaise: integer("amount_paise").notNull(),
 });
 
+export const paymentRefunds = sqliteTable("payment_refunds", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orderId: integer("order_id").notNull().references(() => orders.id),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  customerProfileId: integer("customer_profile_id").notNull().references(() => accountProfiles.id),
+  salesReturnId: integer("sales_return_id").references(() => salesReturns.id),
+  providerPaymentId: text("provider_payment_id").notNull(),
+  providerRefundId: text("provider_refund_id"),
+  refundReceipt: text("refund_receipt").notNull(),
+  amountPaise: integer("amount_paise").notNull(),
+  status: text("status", { enum: ["pending", "processed", "failed"] }).notNull().default("pending"),
+  reason: text("reason").notNull(),
+  failureReason: text("failure_reason").notNull().default(""),
+  requestedByProfileId: integer("requested_by_profile_id").notNull().references(() => accountProfiles.id),
+  initiatedAt: text("initiated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  processedAt: text("processed_at"),
+  failedAt: text("failed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("payment_refunds_order_uidx").on(table.orderId),
+  uniqueIndex("payment_refunds_receipt_uidx").on(table.refundReceipt),
+  uniqueIndex("payment_refunds_provider_uidx").on(table.providerRefundId),
+  index("payment_refunds_customer_status_idx").on(table.customerProfileId, table.status, table.updatedAt),
+  index("payment_refunds_vendor_status_idx").on(table.vendorId, table.status, table.updatedAt),
+  check("payment_refunds_amount_check", sql`${table.amountPaise} > 0`),
+  check("payment_refunds_reason_check", sql`length(trim(${table.reason})) >= 5`),
+]);
+
 export const taxInvoices = sqliteTable("tax_invoices", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   invoiceNumber: text("invoice_number").notNull(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
-  sourceType: text("source_type").notNull(),
+  sourceType: text("source_type", { enum: ["online_order", "offline_sale"] }).notNull(),
   sourceId: integer("source_id").notNull(),
+  sourceNumber: text("source_number").notNull().default(""),
+  sellerName: text("seller_name").notNull().default(""),
+  sellerAddress: text("seller_address").notNull().default(""),
+  sellerEmail: text("seller_email").notNull().default(""),
   sellerGstin: text("seller_gstin").notNull(),
+  buyerName: text("buyer_name").notNull().default(""),
+  buyerAddress: text("buyer_address").notNull().default(""),
   buyerGstin: text("buyer_gstin").notNull().default(""),
   placeOfSupplyStateCode: text("place_of_supply_state_code").notNull(),
+  paymentMode: text("payment_mode").notNull().default(""),
+  currency: text("currency").notNull().default("INR"),
+  grossPaise: integer("gross_paise").notNull().default(0),
+  discountPaise: integer("discount_paise").notNull().default(0),
   subtotalPaise: integer("subtotal_paise").notNull(),
   cgstPaise: integer("cgst_paise").notNull().default(0),
   sgstPaise: integer("sgst_paise").notNull().default(0),
   igstPaise: integer("igst_paise").notNull().default(0),
+  deliveryFeePaise: integer("delivery_fee_paise").notNull().default(0),
   totalPaise: integer("total_paise").notNull(),
   irn: text("irn").notNull().default(""),
   qrCodePayload: text("qr_code_payload").notNull().default(""),
+  snapshotVersion: integer("snapshot_version").notNull().default(1),
+  issuedByProfileId: integer("issued_by_profile_id").references(() => accountProfiles.id),
   issuedAt: text("issued_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("tax_invoices_number_uidx").on(table.invoiceNumber),
+  uniqueIndex("tax_invoices_source_uidx").on(table.sourceType, table.sourceId),
   index("tax_invoices_vendor_date_idx").on(table.vendorId, table.issuedAt),
+  check("tax_invoices_source_check", sql`${table.sourceType} IN ('online_order', 'offline_sale') AND ${table.sourceId} > 0 AND length(trim(${table.sourceNumber})) > 0`),
+  check("tax_invoices_identity_check", sql`length(trim(${table.invoiceNumber})) > 0 AND length(trim(${table.sellerName})) > 0 AND length(trim(${table.sellerAddress})) > 0 AND length(trim(${table.buyerName})) > 0 AND ${table.placeOfSupplyStateCode} GLOB '[0-9][0-9]' AND ${table.currency} = 'INR' AND ${table.snapshotVersion} = 1`),
+  check("tax_invoices_amount_check", sql`${table.grossPaise} >= 0 AND ${table.discountPaise} >= 0 AND ${table.grossPaise} = ${table.subtotalPaise} + ${table.discountPaise} AND ${table.subtotalPaise} >= 0 AND ${table.cgstPaise} >= 0 AND ${table.sgstPaise} >= 0 AND ${table.igstPaise} >= 0 AND ${table.deliveryFeePaise} >= 0 AND ${table.totalPaise} = ${table.subtotalPaise} + ${table.cgstPaise} + ${table.sgstPaise} + ${table.igstPaise} + ${table.deliveryFeePaise}`),
+]);
+
+export const taxInvoiceLines = sqliteTable("tax_invoice_lines", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  invoiceId: integer("invoice_id").notNull().references(() => taxInvoices.id),
+  lineNumber: integer("line_number").notNull(),
+  sourceItemId: integer("source_item_id").notNull(),
+  productName: text("product_name").notNull(),
+  hsnCode: text("hsn_code").notNull().default(""),
+  batchNumber: text("batch_number").notNull().default(""),
+  expiryDate: text("expiry_date").notNull().default(""),
+  quantity: integer("quantity").notNull(),
+  unitPricePaise: integer("unit_price_paise").notNull(),
+  grossPaise: integer("gross_paise").notNull(),
+  discountPaise: integer("discount_paise").notNull().default(0),
+  taxablePaise: integer("taxable_paise").notNull(),
+  gstPercent: integer("gst_percent").notNull(),
+  cgstPaise: integer("cgst_paise").notNull().default(0),
+  sgstPaise: integer("sgst_paise").notNull().default(0),
+  igstPaise: integer("igst_paise").notNull().default(0),
+  lineTotalPaise: integer("line_total_paise").notNull(),
+}, (table) => [
+  uniqueIndex("tax_invoice_lines_number_uidx").on(table.invoiceId, table.lineNumber),
+  uniqueIndex("tax_invoice_lines_source_uidx").on(table.invoiceId, table.sourceItemId),
+  index("tax_invoice_lines_invoice_idx").on(table.invoiceId),
+  check("tax_invoice_lines_amount_check", sql`${table.lineNumber} > 0 AND ${table.sourceItemId} > 0 AND length(trim(${table.productName})) > 0 AND ${table.quantity} > 0 AND ${table.unitPricePaise} > 0 AND ${table.grossPaise} = ${table.unitPricePaise} * ${table.quantity} AND ${table.discountPaise} >= 0 AND ${table.taxablePaise} = ${table.grossPaise} - ${table.discountPaise} AND ${table.taxablePaise} >= 0 AND ${table.gstPercent} IN (0, 5, 12, 18, 28) AND ${table.cgstPaise} >= 0 AND ${table.sgstPaise} >= 0 AND ${table.igstPaise} >= 0 AND ${table.lineTotalPaise} = ${table.taxablePaise} + ${table.cgstPaise} + ${table.sgstPaise} + ${table.igstPaise}`),
 ]);
 
 export const expenses = sqliteTable("expenses", {
@@ -681,8 +1110,68 @@ export const notifications = sqliteTable("notifications", {
   referenceType: text("reference_type").notNull().default(""),
   referenceId: integer("reference_id"),
   readAt: text("read_at"),
+  lifecycleStatus: text("lifecycle_status", { enum: ["unread", "read", "acknowledged", "snoozed", "resolved"] }).notNull().default("unread"),
+  acknowledgedAt: text("acknowledged_at"),
+  snoozedUntil: text("snoozed_until"),
+  resolvedAt: text("resolved_at"),
+  resolutionReason: text("resolution_reason").notNull().default(""),
+  lifecycleVersion: integer("lifecycle_version").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [index("notifications_vendor_read_idx").on(table.vendorId, table.readAt, table.createdAt)]);
+}, (table) => [
+  index("notifications_vendor_read_idx").on(table.vendorId, table.readAt, table.createdAt),
+  index("notifications_vendor_lifecycle_idx").on(table.vendorId, table.lifecycleStatus, table.snoozedUntil, table.createdAt),
+  uniqueIndex("notifications_vendor_inventory_active_uidx")
+    .on(table.vendorId, table.referenceType, table.referenceId)
+    .where(sql`${table.vendorId} IS NOT NULL AND ${table.notificationType} IN ('inventory_near_expiry', 'inventory_low_stock', 'inventory_zero_stock') AND ${table.lifecycleStatus} <> 'resolved'`),
+]);
+
+export const notificationPreferences = sqliteTable("notification_preferences", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  profileId: integer("profile_id").notNull().references(() => accountProfiles.id),
+  category: text("category", { enum: ["transactional", "safety", "reminder", "marketing"] }).notNull(),
+  inAppEnabled: integer("in_app_enabled", { mode: "boolean" }).notNull().default(true),
+  emailEnabled: integer("email_enabled", { mode: "boolean" }).notNull().default(false),
+  smsEnabled: integer("sms_enabled", { mode: "boolean" }).notNull().default(false),
+  timeZone: text("time_zone").notNull().default("Asia/Kolkata"),
+  version: integer("version").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("notification_preferences_profile_category_uidx").on(table.profileId, table.category),
+  index("notification_preferences_profile_idx").on(table.profileId, table.updatedAt),
+  check("notification_preferences_channel_check", sql`(${table.category} NOT IN ('transactional', 'safety') OR ${table.inAppEnabled} = 1) AND ${table.smsEnabled} = 0 AND ${table.version} >= 0`),
+]);
+
+export const transactionalEmailOutbox = sqliteTable("transactional_email_outbox", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  profileId: integer("profile_id").notNull().references(() => accountProfiles.id),
+  recipientEmail: text("recipient_email").notNull(),
+  category: text("category", { enum: ["transactional", "safety", "reminder"] }).notNull(),
+  eventType: text("event_type", { enum: ["order_placed", "order_status_changed", "prescription_reviewed", "refill_due", "pill_due"] }).notNull(),
+  payloadJson: text("payload_json").notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  status: text("status", { enum: ["queued", "processing", "sent", "retry_wait", "dead_letter", "cancelled"] }).notNull().default("queued"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(5),
+  nextAttemptAt: text("next_attempt_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  leaseOwner: text("lease_owner").notNull().default(""),
+  leaseExpiresAt: text("lease_expires_at"),
+  providerMessageId: text("provider_message_id").notNull().default(""),
+  lastErrorCode: text("last_error_code").notNull().default(""),
+  lastErrorReason: text("last_error_reason").notNull().default(""),
+  sentAt: text("sent_at"),
+  deadLetteredAt: text("dead_lettered_at"),
+  cancelledAt: text("cancelled_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("transactional_email_outbox_dedupe_uidx").on(table.dedupeKey),
+  index("transactional_email_outbox_due_idx").on(table.status, table.nextAttemptAt, table.id),
+  index("transactional_email_outbox_lease_idx").on(table.status, table.leaseExpiresAt, table.id),
+  index("transactional_email_outbox_profile_idx").on(table.profileId, table.createdAt),
+  check("transactional_email_outbox_attempt_check", sql`${table.attemptCount} >= 0 AND ${table.maxAttempts} BETWEEN 1 AND 12 AND ${table.attemptCount} <= ${table.maxAttempts}`),
+]);
 
 export const pillReminders = sqliteTable("pill_reminders", {
   id: integer("id").primaryKey({ autoIncrement: true }),

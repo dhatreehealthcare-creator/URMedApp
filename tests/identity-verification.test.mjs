@@ -64,9 +64,11 @@ test("vendor operations require verified submitted approved onboarding while set
 test("vendor registration cannot use phone-only account creation", () => {
   const authPanel = read("../app/auth-panel.tsx");
   const profileRoute = read("../app/api/auth/profile/route.ts");
-  assert.match(authPanel, /mode === "register" && role === "vendor"/);
-  assert.match(authPanel, /Create the vendor email and password account first/);
-  assert.match(profileRoute, /Vendor registration requires an email and password account/);
+  assert.match(authPanel, /if \(mode === "register"\) throw new Error/);
+  assert.match(authPanel, /mode === "login" && <button className=\{method === "phone"/);
+  assert.match(profileRoute, /if \(!email\)/);
+  assert.match(profileRoute, /role === "vendor" \? "Vendor" : "Customer"/);
+  assert.match(profileRoute, /registration requires an email and password account before phone OTP verification/);
 });
 
 test("P1-02 migration backfills only linked live test profiles and preserves approved vendors", () => {
@@ -75,6 +77,6 @@ test("P1-02 migration backfills only linked live test profiles and preserves app
   assert.match(migration, /registration_submitted_at/);
   assert.match(migration, /FROM `account_profiles` profile/);
   assert.doesNotMatch(migration, /FROM `customers`/);
-  assert.match(migration, /WHERE `approval_status` = 'approved' AND `compliance_status` = 'verified'/);
+  assert.match(migration, /WHERE \(`approval_status` = 'approved' AND `compliance_status` = 'verified'\)/);
+  assert.match(migration, /event\.`action` = 'vendor\.registration\.submitted'/);
 });
-

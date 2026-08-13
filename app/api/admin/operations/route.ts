@@ -1,7 +1,10 @@
 import { getD1 } from "../../../../db/d1";
 import { requireAdminProfile } from "../../../../lib/admin-access";
 import { appendAuditEvent } from "../../../../lib/audit";
+import { CategoryGovernanceError, saveProductCategory } from "../../../../lib/category-governance";
 import { errorResponse } from "../../../../lib/auth-server";
+import { postAdminExpense } from "../../../../lib/admin-expense";
+import { getRuntimeEnv } from "../../../../lib/runtime-env";
 
 export async function GET(request: Request) {
   try {
@@ -16,15 +19,27 @@ export async function GET(request: Request) {
         (SELECT COALESCE(SUM(total_paise),0) FROM offline_sales) AS offlineSalesPaise,
         (SELECT COALESCE(SUM(amount_paise),0) FROM expenses) AS expensesPaise,
         (SELECT COUNT(*) FROM delivery_assignments WHERE status NOT IN ('delivered','cancelled')) AS activeDeliveries`).first(),
-      db.prepare(`SELECT id,name,status FROM categories ORDER BY name`).all(),
-      db.prepare(`SELECT v.id,v.business_name AS businessName,v.owner_name AS ownerName,v.email,v.phone,v.latitude,v.longitude,v.approval_status AS approvalStatus,v.compliance_status AS complianceStatus,v.home_delivery AS homeDelivery FROM vendors v ORDER BY v.id DESC LIMIT 250`).all(),
+      db.prepare(`SELECT category.id,category.name,category.status,
+        (SELECT COUNT(*) FROM products product
+          WHERE COALESCE(product.display_category_id,product.category_id)=category.id) AS productCount
+        FROM categories category ORDER BY lower(category.name),category.id`).all(),
+      db.prepare(`SELECT v.id,v.business_name AS businessName,v.owner_name AS ownerName,
+        v.approval_status AS approvalStatus,v.compliance_status AS complianceStatus,v.home_delivery AS homeDelivery
+        FROM vendors v ORDER BY v.id DESC LIMIT 250`).all(),
       db.prepare(`SELECT p.name AS productName,p.manufacturer,SUM(i.quantity) AS quantity,SUM(i.reserved_quantity) AS reservedQuantity,COUNT(DISTINCT i.vendor_id) AS stores,MIN(i.expiry_date) AS nearestExpiry FROM pharmacy_inventory i JOIN products p ON p.id=i.product_id WHERE i.active=1 GROUP BY p.id,p.name,p.manufacturer ORDER BY quantity ASC,p.name LIMIT 250`).all(),
       db.prepare(`SELECT date(created_at) AS saleDate,'online' AS channel,COUNT(*) AS transactions,SUM(total_paise) AS totalPaise FROM orders GROUP BY date(created_at) UNION ALL SELECT date(created_at),'offline',COUNT(*),SUM(total_paise) FROM offline_sales GROUP BY date(created_at) ORDER BY saleDate DESC LIMIT 120`).all(),
       db.prepare(`SELECT e.id,e.purpose,e.expense_head AS expenseHead,e.amount_paise AS amountPaise,e.expense_date AS expenseDate,e.payment_mode AS paymentMode,e.reference_number AS referenceNumber,v.business_name AS businessName FROM expenses e LEFT JOIN vendors v ON v.id=e.vendor_id ORDER BY e.expense_date DESC,e.id DESC LIMIT 100`).all(),
       db.prepare(`SELECT l.id,l.account_code AS accountCode,l.entry_date AS entryDate,l.description,l.debit_paise AS debitPaise,l.credit_paise AS creditPaise,l.reference_type AS referenceType,v.business_name AS businessName FROM ledger_entries l LEFT JOIN vendors v ON v.id=l.vendor_id ORDER BY l.entry_date DESC,l.id DESC LIMIT 200`).all(),
-      db.prepare(`SELECT o.id AS orderId,o.order_number AS orderNumber,o.customer_name AS customerName,o.delivery_method AS deliveryMethod,o.delivery_status AS deliveryStatus,o.delivery_address AS deliveryAddress,o.created_at AS createdAt,v.business_name AS businessName,agent.name AS agentName,a.status AS assignmentStatus,a.assigned_at AS assignedAt,a.delivered_at AS deliveredAt FROM orders o JOIN vendors v ON v.id=o.vendor_id LEFT JOIN delivery_assignments a ON a.id=(SELECT id FROM delivery_assignments latest WHERE latest.order_id=o.id AND latest.status<>'cancelled' ORDER BY latest.id DESC LIMIT 1) LEFT JOIN delivery_agents da ON da.id=a.agent_id LEFT JOIN account_profiles agent ON agent.id=da.profile_id WHERE o.delivery_method<>'pickup' ORDER BY o.id DESC LIMIT 150`).all(),
-      db.prepare(`SELECT da.id,profile.name,profile.phone,da.vehicle_type AS vehicleType,da.vehicle_number AS vehicleNumber,
-        da.availability_status AS availabilityStatus,da.current_latitude AS currentLatitude,da.current_longitude AS currentLongitude,
+      db.prepare(`SELECT o.id AS orderId,o.order_number AS orderNumber,o.customer_name AS customerName,
+        o.delivery_method AS deliveryMethod,o.delivery_status AS deliveryStatus,o.created_at AS createdAt,
+        v.business_name AS businessName,agent.name AS agentName,a.status AS assignmentStatus,
+        a.assigned_at AS assignedAt,a.delivered_at AS deliveredAt FROM orders o JOIN vendors v ON v.id=o.vendor_id
+        LEFT JOIN delivery_assignments a ON a.id=(SELECT id FROM delivery_assignments latest
+          WHERE latest.order_id=o.id AND latest.status<>'cancelled' ORDER BY latest.id DESC LIMIT 1)
+        LEFT JOIN delivery_agents da ON da.id=a.agent_id LEFT JOIN account_profiles agent ON agent.id=da.profile_id
+        WHERE o.delivery_method<>'pickup' ORDER BY o.id DESC LIMIT 150`).all(),
+      db.prepare(`SELECT da.id,profile.name,da.vehicle_type AS vehicleType,da.vehicle_number AS vehicleNumber,
+        da.availability_status AS availabilityStatus,
         (SELECT COUNT(*) FROM delivery_assignments a WHERE a.agent_id=da.id AND a.status NOT IN ('delivered','cancelled')) AS activeAssignments
         FROM delivery_agents da JOIN account_profiles profile ON profile.id=da.profile_id
         WHERE profile.status='active' ORDER BY CASE da.availability_status WHEN 'available' THEN 1 WHEN 'online' THEN 2 ELSE 3 END,profile.name`).all(),
@@ -37,7 +52,8 @@ export async function GET(request: Request) {
         (SELECT COUNT(*) FROM tax_invoices WHERE irn<>'') AS irnInvoices,
         (SELECT COUNT(*) FROM tax_invoices) AS taxInvoices`).first(),
     ]);
-    return Response.json({summary,categories:categories.results,stores:stores.results,stock:stock.results,sales:sales.results,expenses:expenses.results,ledger:ledger.results,deliveries:deliveries.results,deliveryAgents:deliveryAgents.results,governance,eInvoice:{ready:Boolean(process.env.EINVOICE_API_URL&&process.env.EINVOICE_API_KEY),message:process.env.EINVOICE_API_URL&&process.env.EINVOICE_API_KEY?"Government e-invoice connector configured":"Awaiting authorized GST e-invoice provider credentials"}});
+    const runtime=getRuntimeEnv(); const eInvoiceReady=Boolean(runtime.EINVOICE_API_URL&&runtime.EINVOICE_API_KEY);
+    return Response.json({summary,categories:categories.results,stores:stores.results,stock:stock.results,sales:sales.results,expenses:expenses.results,ledger:ledger.results,deliveries:deliveries.results,deliveryAgents:deliveryAgents.results,governance,eInvoice:{ready:eInvoiceReady,message:eInvoiceReady?"Government e-invoice connector configured":"Awaiting authorized GST e-invoice provider credentials"}}, { headers: { "Cache-Control": "private, no-store" } });
   } catch(error){return errorResponse(error);}
 }
 
@@ -47,23 +63,16 @@ export async function POST(request: Request){
     if(action==="category"){
       const name=String(body.name??"").trim().slice(0,100); const status=String(body.status??"active"); const id=Number(body.id||0);
       if(!name||!["active","inactive"].includes(status)) return Response.json({error:"Category name and status are required"},{status:400});
-      if(id) await db.prepare(`UPDATE categories SET name=?,status=? WHERE id=?`).bind(name,status,id).run();
-      else await db.prepare(`INSERT INTO categories (name,status) VALUES (?,?)`).bind(name,status).run();
-      await appendAuditEvent({actorProfileId:profile.id,action:id?"category.updated":"category.created",entityType:"category",entityId:id||name,after:{name,status},requestId:request.headers.get("cf-ray")??""});
-      return Response.json({updated:true});
+      const saved=await saveProductCategory({db,id:id||undefined,name,status:status as "active"|"inactive",
+        actorProfileId:profile.id,requestId:request.headers.get("cf-ray")??""});
+      return Response.json({updated:true,id:saved.id},{status:saved.created?201:200});
     }
     if(action==="expense"){
       const purpose=String(body.purpose??"").trim().slice(0,200), expenseHead=String(body.expenseHead??"").trim().slice(0,100), paymentMode=String(body.paymentMode??"").trim().slice(0,50), reference=String(body.referenceNumber??"").trim().slice(0,100);
       const amountPaise=Math.round(Number(body.amount)*100), expenseDate=String(body.expenseDate??""); const vendorId=body.vendorId?Number(body.vendorId):null;
       const actorId=profile.id;
       if(!purpose||!expenseHead||!paymentMode||!Number.isInteger(amountPaise)||amountPaise<1||!/^\d{4}-\d{2}-\d{2}$/.test(expenseDate)) return Response.json({error:"Complete all expense fields with a positive amount"},{status:400});
-      const result=await db.prepare(`INSERT INTO expenses (vendor_id,purpose,expense_head,amount_paise,expense_date,payment_mode,reference_number,created_by_profile_id) VALUES (?,?,?,?,?,?,?,?)`).bind(vendorId,purpose,expenseHead,amountPaise,expenseDate,paymentMode,reference,actorId).run();
-      const expenseId=Number(result.meta.last_row_id);
-      await db.batch([
-        db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id) VALUES (?,'EXPENSE',?,?,?,0,'expense',?,?)`).bind(vendorId,expenseDate,purpose,amountPaise,expenseId,actorId),
-        db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id) VALUES (?,'CASH_BANK',?,?,0,?,'expense',?,?)`).bind(vendorId,expenseDate,purpose,amountPaise,expenseId,actorId),
-      ]);
-      await appendAuditEvent({vendorId,actorProfileId:actorId,action:"expense.created",entityType:"expense",entityId:expenseId,after:{purpose,expenseHead,amountPaise,expenseDate,paymentMode},requestId:request.headers.get("cf-ray")??""});
+      const { expenseId }=await postAdminExpense({db,vendorId,purpose,expenseHead,amountPaise,expenseDate,paymentMode,referenceNumber:reference,actorProfileId:actorId,requestId:request.headers.get("cf-ray")??""});
       return Response.json({created:true,expenseId},{status:201});
     }
     if(action==="retention_policy"){
@@ -96,5 +105,5 @@ export async function POST(request: Request){
       return Response.json({assigned:true});
     }
     return Response.json({error:"Admin operation is invalid"},{status:400});
-  }catch(error){return errorResponse(error);}
+  }catch(error){if(error instanceof CategoryGovernanceError)return Response.json({error:error.message},{status:error.status});return errorResponse(error);}
 }

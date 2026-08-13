@@ -52,7 +52,8 @@ export class PurchaseLifecycleError extends Error {
 export async function listReturnablePurchases(db: D1Database, vendorId: number): Promise<ReturnablePurchase[]> {
   const result = await db.prepare(`SELECT item.id AS purchaseOrderItemId,item.purchase_order_id AS purchaseOrderId,
     item.inventory_id AS inventoryId,item.product_id AS productId,p.name AS productName,
-    item.batch_number AS batchNumber,item.quantity + item.free_quantity AS purchasedQuantity,
+    item.batch_number AS batchNumber,
+    item.received_quantity + item.received_free_quantity AS purchasedQuantity,
     item.purchase_price_paise AS purchasePricePaise,po.purchase_number AS purchaseNumber,
     po.supplier_id AS supplierId,s.business_name AS supplierName,i.quantity AS currentQuantity,
     COALESCE((SELECT SUM(ri.quantity) FROM supplier_return_items ri JOIN supplier_returns r ON r.id=ri.supplier_return_id
@@ -60,7 +61,8 @@ export async function listReturnablePurchases(db: D1Database, vendorId: number):
     FROM purchase_order_items item JOIN purchase_orders po ON po.id=item.purchase_order_id
     JOIN suppliers s ON s.id=po.supplier_id JOIN products p ON p.id=item.product_id
     JOIN pharmacy_inventory i ON i.id=item.inventory_id
-    WHERE po.vendor_id=? AND po.status IN (?,?) AND i.quantity>0
+    WHERE po.vendor_id=? AND po.status IN (?,?,?) AND i.quantity>0
+      AND item.received_quantity + item.received_free_quantity > 0
     ORDER BY po.invoice_date DESC,item.id DESC LIMIT 250`)
     .bind(vendorId, ...RETURNABLE_PURCHASE_STATUSES).all<ReturnablePurchase>();
   return result.results;
@@ -74,13 +76,15 @@ export async function completeSupplierReturn(input: SupplierReturnInput) {
   }
 
   const item = await db.prepare(`SELECT item.id,item.purchase_order_id AS purchaseOrderId,item.inventory_id AS inventoryId,
-    item.purchase_price_paise AS purchasePricePaise,item.quantity+item.free_quantity AS purchasedQuantity,
+    item.purchase_price_paise AS purchasePricePaise,
+    item.received_quantity+item.received_free_quantity AS purchasedQuantity,
     po.supplier_id AS supplierId,i.quantity AS currentQuantity,
     COALESCE((SELECT SUM(ri.quantity) FROM supplier_return_items ri JOIN supplier_returns r ON r.id=ri.supplier_return_id
       WHERE ri.purchase_order_item_id=item.id AND r.status<>'cancelled'),0) AS returnedQuantity
     FROM purchase_order_items item JOIN purchase_orders po ON po.id=item.purchase_order_id
     JOIN pharmacy_inventory i ON i.id=item.inventory_id
-    WHERE item.id=? AND po.vendor_id=? AND po.status IN (?,?)`)
+    WHERE item.id=? AND po.vendor_id=? AND po.status IN (?,?,?)
+      AND item.received_quantity + item.received_free_quantity > 0`)
     .bind(purchaseOrderItemId, vendorId, ...RETURNABLE_PURCHASE_STATUSES).first<SupplierReturnItem>();
   if (!item) throw new PurchaseLifecycleError("Received purchase item not found", 404);
 

@@ -3,8 +3,10 @@ import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse } from "../../../lib/auth-server";
 import { asPositiveInteger, rupeesToPaise } from "../../../lib/money";
 import { isStrictIsoDate } from "../../../lib/date-controls";
-import { releaseExpiredReservations } from "../../../lib/inventory-reservations";
+import { redactPrivateVendorLocation } from "../../../lib/location-privacy";
+import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
 import { requireVendorPermission } from "../../../lib/vendor-access";
+import { attachPublishedVendorLocation } from "../../../lib/vendor-public-location";
 
 type InventoryRow = {
   id: number;
@@ -15,9 +17,6 @@ type InventoryRow = {
   manufacturer: string;
   prescriptionRequired: number;
   businessName: string;
-  vendorLatitude: string;
-  vendorLongitude: string;
-  deliveryRadiusKm: number;
   homeDelivery: number;
   batchNumber: string;
   expiryDate: string | null;
@@ -37,10 +36,9 @@ export async function GET(request: Request) {
     const mine = url.searchParams.get("scope") === "mine";
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const db = getD1();
-    await releaseExpiredReservations(db);
     let where = `i.active = 1 AND i.quarantine_status = 'available' AND i.expiry_date IS NOT NULL
       AND i.cold_chain_status IN ('not_applicable','within_range') AND p.active = 1
-      AND v.approval_status = 'approved' AND v.compliance_status = 'verified' AND v.suspended_at IS NULL
+      AND ${currentOperationalVendorPredicate("v")}
       AND date(i.expiry_date) >= date('now') AND (i.quantity - i.reserved_quantity) > 0
       AND i.id = (SELECT offer.id FROM pharmacy_inventory offer
         WHERE offer.vendor_id = i.vendor_id AND offer.product_id = i.product_id AND offer.active = 1
@@ -63,15 +61,24 @@ export async function GET(request: Request) {
       quantityColumn = "i.quantity";
     }
     if (query) {
-      where += " AND (p.normalized_name LIKE ? OR lower(p.manufacturer) LIKE ?)";
-      bindings.push(`%${query}%`, `%${query}%`);
+      where += ` AND (p.normalized_name LIKE ? OR (manufacturer_state.manufacturer_id IS NOT NULL AND (
+        canonical_manufacturer.normalized_name LIKE ? OR EXISTS (SELECT 1 FROM manufacturer_aliases alias
+          WHERE alias.manufacturer_id = canonical_manufacturer.id AND alias.normalized_alias LIKE ?))))`;
+      bindings.push(`%${query}%`, `%${query}%`, `%${query}%`);
     }
     bindings.push(mine ? 200 : 60);
     const result = await db.prepare(`
       SELECT i.id, i.vendor_id AS vendorId, i.product_id AS productId, p.legacy_id AS legacyId,
-        p.name AS productName, p.manufacturer, p.prescription_required AS prescriptionRequired,
-        v.business_name AS businessName, v.latitude AS vendorLatitude, v.longitude AS vendorLongitude,
-        v.delivery_radius_km AS deliveryRadiusKm, v.home_delivery AS homeDelivery,
+        p.name AS productName, COALESCE(canonical_manufacturer.name, p.manufacturer) AS manufacturer,
+        p.prescription_required AS prescriptionRequired,
+        v.business_name AS businessName, v.home_delivery AS homeDelivery,
+        public_location.label AS publicLocationLabel,
+        public_location.address AS publicLocationAddress,
+        public_location.latitude AS publicLocationLatitude,
+        public_location.longitude AS publicLocationLongitude,
+        public_location.pickup_enabled AS publicPickupEnabled,
+        public_location.service_enabled AS publicServiceEnabled,
+        public_location.service_radius_km AS publicServiceRadiusKm,
         i.batch_number AS batchNumber, i.expiry_date AS expiryDate,
         i.sale_price_paise AS salePricePaise, ${quantityColumn} AS quantity,
         i.reserved_quantity AS reservedQuantity, i.gst_percent AS gstPercent,
@@ -82,13 +89,21 @@ export async function GET(request: Request) {
           ELSE 'valid' END AS expiryStatus ${purchaseColumn}
       FROM pharmacy_inventory i
       JOIN products p ON p.id = i.product_id
+      LEFT JOIN manufacturers canonical_manufacturer ON canonical_manufacturer.id = p.manufacturer_id
+      LEFT JOIN manufacturer_canonical_state manufacturer_state
+        ON manufacturer_state.manufacturer_id = canonical_manufacturer.id AND manufacturer_state.status = 'active'
       JOIN vendors v ON v.id = i.vendor_id
+      LEFT JOIN vendor_public_locations public_location
+        ON public_location.vendor_id = v.id AND public_location.publication_status = 'published'
       WHERE ${where}
       ORDER BY CASE WHEN i.expiry_date IS NULL OR date(i.expiry_date) < date('now') THEN 0
         WHEN date(i.expiry_date) <= date('now', '+3 months') THEN 1 ELSE 2 END,
         date(i.expiry_date), i.updated_at DESC LIMIT ?
     `).bind(...bindings).all<InventoryRow>();
-    return Response.json({ inventory: result.results });
+    const inventory = result.results.map((row) => attachPublishedVendorLocation(
+      mine ? row as unknown as Record<string, unknown> : redactPrivateVendorLocation(row),
+    ));
+    return Response.json({ inventory }, { headers: { "Cache-Control": mine ? "private, no-store" : "no-store" } });
   } catch (error) {
     return errorResponse(error);
   }
@@ -138,7 +153,7 @@ export async function POST(request: Request) {
     ]);
     const inventoryId=Number(results[0]?.meta.last_row_id);
     await appendAuditEvent({vendorId,actorProfileId:profile.id,action:"inventory.opening_stock",entityType:"inventory",entityId:inventoryId,after:{legacyId,batchNumber,expiryDate,manufacturingDate,quantity,purchasePricePaise,salePricePaise,gstPercent},requestId:request.headers.get("cf-ray")??""});
-    return Response.json({ saved: true }, { status: 201 });
+    return Response.json({ saved: true }, { status: 201, headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return errorResponse(error);
   }

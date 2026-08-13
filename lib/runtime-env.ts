@@ -8,6 +8,10 @@ export type UrmedRuntimeEnv = {
   RAZORPAY_WEBHOOK_SECRET?: string;
   DATA_ENCRYPTION_KEY?: string;
   APP_STAGE?: string;
+  INTEGRATION_TEST_AUTH_SECRET?: string;
+  REMINDER_JOB_SECRET?: string;
+  EINVOICE_API_URL?: string;
+  EINVOICE_API_KEY?: string;
 };
 
 export function getRuntimeEnv(): UrmedRuntimeEnv {

@@ -28,7 +28,9 @@ export function ProtectedRoleRoute({ role }: { role: WorkspaceRole }) {
     <section className={`protected-session ${authorized ? "authenticated" : ""}`}>
       <div className="protected-session-heading">
         <Link href="/"><ArrowLeft size={16} /> Marketplace</Link>
-        {!authorized && <div><span><ShieldCheck size={18} /></span><div><small>PROTECTED WORKSPACE</small><h1>{workspaceLabels[role]}</h1><p>Sign in with an active {role} account. Other account roles cannot open this workspace.</p></div></div>}
+        {!sessionAuthorized && <div><span><ShieldCheck size={18} /></span><div><small>PROTECTED WORKSPACE</small><h1>{workspaceLabels[role]}</h1><p>Sign in with an active {role} account. Other account roles cannot open this workspace.</p></div></div>}
+        {sessionAuthorized && role === "vendor" && !authorized && <div><span><ShieldCheck size={18} /></span><div><small>RESTRICTED ONBOARDING</small><h1>Complete vendor verification</h1><p>{profile?.vendorAccessStatus === "review_pending" ? "Your verified registration is under administrator review. Pharmacy operations remain locked until approval." : "Verify both identity factors and submit the pharmacy registration before operational access is enabled."}</p></div></div>}
+        {sessionAuthorized && role === "customer" && !authorized && <div><span><ShieldCheck size={18} /></span><div><small>RESTRICTED ONBOARDING</small><h1>Complete customer verification</h1><p>Verify both the account email and required mobile OTP on the same email/password account before customer ordering and account operations are enabled.</p></div></div>}
       </div>
       <AuthPanel role={role} onProfileChange={updateProfile} />
     </section>

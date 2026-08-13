@@ -24,17 +24,19 @@ export function GeoLocationPicker({
   const marker = useRef<Marker | null>(null);
   const onChangeRef = useRef(onChange);
   const [locating, setLocating] = useState(false);
-  const [status, setStatus] = useState("Click the map or use this device's GPS.");
+  const [mapEnabled, setMapEnabled] = useState(false);
+  const [status, setStatus] = useState("Use device GPS or enter coordinates. External map tiles stay off until you choose to load them.");
   const point = { latitude: Number(latitude), longitude: Number(longitude) };
   const valid = latitude !== "" && longitude !== "" && isValidGeoPoint(point);
 
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
 
   useEffect(() => {
+    if (!mapEnabled) return;
     let cancelled = false;
     void import("leaflet").then((L) => {
       if (cancelled || !mapElement.current || map.current) return;
-      const initial: [number, number] = valid ? [point.latitude, point.longitude] : [17.385, 78.4867];
+      const initial: [number, number] = valid ? [point.latitude, point.longitude] : [20.5937, 78.9629];
       const instance = L.map(mapElement.current, { zoomControl: true }).setView(initial, valid ? 15 : 11);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "© OpenStreetMap contributors",
@@ -63,9 +65,9 @@ export function GeoLocationPicker({
       map.current = null;
       marker.current = null;
     };
-    // Map is created once; coordinate updates are handled by the next effect.
+    // Map is created only after explicit consent; coordinate updates are handled by the next effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [mapEnabled]);
 
   useEffect(() => {
     if (!valid || !map.current || !marker.current) return;
@@ -91,7 +93,9 @@ export function GeoLocationPicker({
   const mapUrl = valid ? `https://www.openstreetmap.org/?mlat=${point.latitude}&mlon=${point.longitude}#map=17/${point.latitude}/${point.longitude}` : "";
   return <div className="geo-picker wide">
     <div className="geo-picker-heading"><div><MapPin size={18} /><span><strong>{label}</strong><small>{status}</small></span></div><button className="portal-outline" disabled={locating} onClick={useDeviceLocation} type="button"><Crosshair size={15} /> {locating ? "Locating…" : "Use my GPS"}</button></div>
-    <div aria-label="Interactive location map" className="geo-map" ref={mapElement} />
+    {mapEnabled
+      ? <div aria-label="Interactive location map using OpenStreetMap tiles" className="geo-map" ref={mapElement} />
+      : <div className="geo-map geo-map-consent"><MapPin size={24} /><strong>External map tiles are off</strong><span>Loading the interactive map sends the viewed map area to OpenStreetMap. GPS and coordinate entry do not load map tiles.</span><button className="portal-outline" onClick={() => { setMapEnabled(true); setStatus("OpenStreetMap tiles loaded by your choice. Click or drag the pin to adjust the location."); }} type="button">Load interactive map</button></div>}
     <div className="geo-coordinate-grid">
       <label className="portal-field"><span>Latitude *</span><input max="90" min="-90" onChange={(event) => onChange({ latitude: event.target.value, longitude })} required step="any" type="number" value={latitude} /></label>
       <label className="portal-field"><span>Longitude *</span><input max="180" min="-180" onChange={(event) => onChange({ latitude, longitude: event.target.value })} required step="any" type="number" value={longitude} /></label>

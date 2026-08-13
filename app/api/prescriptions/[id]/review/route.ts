@@ -2,17 +2,13 @@ import { getD1 } from "../../../../../db/d1";
 import { appendAuditEvent } from "../../../../../lib/audit";
 import { errorResponse } from "../../../../../lib/auth-server";
 import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
-import { sendTransactionalEmail } from "../../../../../lib/resend";
+import { enqueueTransactionalEmail } from "../../../../../lib/transactional-email-outbox";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
 
 type MedicineInput = { medicineText?: unknown; dosageText?: unknown; durationText?: unknown; quantityApproved?: unknown };
 
 function text(value: unknown, maximum: number) {
   return String(value ?? "").trim().slice(0, maximum);
-}
-
-function html(value: string) {
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -33,10 +29,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       .bind(vendorId, profile.id).first<{ id: number; fullName: string }>();
     if (!pharmacist) return Response.json({ error: "A currently verified pharmacist profile is required to review prescriptions" }, { status: 403 });
     const prescription = await db.prepare(`SELECT p.id, p.status, p.customer_profile_id AS customerProfileId,
-      p.prescription_number AS prescriptionNumber, c.email AS customerEmail
-      FROM prescriptions p JOIN account_profiles c ON c.id = p.customer_profile_id
+      p.prescription_number AS prescriptionNumber
+      FROM prescriptions p
       WHERE p.id = ? AND p.vendor_id = ? LIMIT 1`).bind(prescriptionId, vendorId)
-      .first<{ id: number; status: string; customerProfileId: number; prescriptionNumber: string; customerEmail: string }>();
+      .first<{ id: number; status: string; customerProfileId: number; prescriptionNumber: string }>();
     if (!prescription) return Response.json({ error: "Prescription not found" }, { status: 404 });
     if (prescription.status !== "uploaded") return Response.json({ error: "Only a newly uploaded or resubmitted prescription can be reviewed" }, { status: 409 });
 
@@ -118,8 +114,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       throw error;
     }
     await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: `prescription.${decision}`, entityType: "prescription", entityId: prescriptionId, after: { decision, notes, medicines, pharmacistId: pharmacist.id }, requestId: request.headers.get("cf-ray") ?? "" });
-    const subject = decision === "approved" ? "approved" : decision === "rejected" ? "rejected" : "needs clarification";
-    await sendTransactionalEmail(prescription.customerEmail, `URMED prescription ${prescription.prescriptionNumber} ${subject}`, `<h2>Prescription ${html(subject)}</h2><p>${html(notes || "Your pharmacy has completed the prescription review.")}</p>`);
+    await enqueueTransactionalEmail(db, {
+      profileId: prescription.customerProfileId,
+      eventType: "prescription_reviewed",
+      payload: { prescriptionNumber: prescription.prescriptionNumber,
+        decision: decision as "approved" | "rejected" | "clarification_required" },
+      dedupeKey: `prescription_reviewed:${prescriptionId}:${decision}`,
+    });
     return Response.json({ reviewed: true, decision, pharmacist: pharmacist.fullName });
   } catch (error) {
     return errorResponse(error);

@@ -1,0 +1,69 @@
+.stack { display: grid; gap: 16px; }
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 21px; }
+.hero h2, .hero p { margin: 4px 0 0; }
+.hero p { color: var(--muted); }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.metrics article { padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
+.metrics small, .metrics strong { display: block; }
+.metrics small { color: var(--muted); }
+.metrics strong { margin-top: 5px; font-size: 1.35rem; }
+.filters { display: grid; grid-template-columns: minmax(220px, 1.4fr) repeat(4, minmax(115px, .7fr)) auto; gap: 9px; padding: 18px 20px; border-bottom: 1px solid var(--line); align-items: end; }
+.filters label > span { display: block; margin-bottom: 5px; color: var(--muted); font-size: .76rem; }
+.filters input, .filters select { width: 100%; min-height: 39px; border: 1px solid var(--line); border-radius: 9px; background: #fff; padding: 8px 9px; font: inherit; }
+.filters label:first-child > div { position: relative; }
+.filters label:first-child svg { position: absolute; left: 9px; top: 12px; color: var(--muted); }
+.filters label:first-child input { padding-left: 30px; }
+.list { display: grid; }
+.list > article { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; padding: 15px 20px; border-bottom: 1px solid var(--line); }
+.orderIcon { width: 37px; height: 37px; display: grid; place-items: center; border-radius: 11px; color: var(--green); background: #eaf6f2; }
+.list strong, .list small, .list em { display: block; }
+.list small, .list em { margin-top: 3px; color: var(--muted); }
+.list em { font-size: .76rem; font-style: normal; }
+.list aside { text-align: right; }
+.list aside button, .pagination button { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; border: 0; border-radius: 8px; background: #edf6f3; color: var(--green); padding: 7px 9px; }
+.badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.badges span { padding: 4px 7px; border-radius: 999px; background: #f0f4f2; color: #52605c; font-size: .7rem; text-transform: capitalize; }
+.empty { display: grid; place-items: center; gap: 5px; padding: 42px; color: var(--muted); }
+.pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; color: var(--muted); font-size: .8rem; }
+.pagination div { display: flex; gap: 7px; }
+.pagination button { margin: 0; }
+.detail { padding: 20px; }
+.detail > header { display: flex; justify-content: space-between; gap: 15px; align-items: flex-start; }
+.detail h2, .detail p { margin: 4px 0 0; }
+.detail p { color: var(--muted); }
+.detailGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 18px; }
+.detailGrid article { padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #fafcfb; }
+.detailGrid small, .detailGrid strong, .detailGrid span { display: block; }
+.detailGrid small, .detailGrid span { color: var(--muted); font-size: .75rem; }
+.detailGrid strong { margin: 5px 0; text-transform: capitalize; }
+.address, .reorderNote, .receipt, .refundStatus, .cancel, .warning { display: flex; gap: 10px; margin-top: 14px; padding: 12px; border-radius: 11px; background: #f2f8f6; }
+.address svg, .reorderNote svg { color: var(--green); flex: 0 0 auto; }
+.address strong, .address small, .reorderNote strong, .reorderNote small { display: block; }
+.address small, .reorderNote small { color: var(--muted); margin-top: 3px; }
+.items { display: grid; gap: 8px; margin-top: 15px; }
+.items article { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 11px; }
+.items strong, .items small, .items em { display: block; }
+.items small, .items em { color: var(--muted); margin-top: 3px; font-style: normal; font-size: .78rem; }
+.timeline { margin-top: 18px; }
+.timeline h3 { margin: 0 0 10px; }
+.timeline article { display: grid; grid-template-columns: 12px 1fr; gap: 9px; padding: 0 0 13px; }
+.timeline article > span { width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px #e6f3ef; }
+.timeline strong, .timeline small, .timeline em { display: block; }
+.timeline small, .timeline em { color: var(--muted); margin-top: 2px; font-size: .76rem; font-style: normal; }
+.cancel { align-items: center; background: #fff5f2; color: #923627; }
+.cancel > div { flex: 1; }
+.cancel strong, .cancel small { display: block; }
+.cancel small { margin-top: 3px; color: #86594f; }
+.cancel input { width: 100%; margin-top: 9px; border: 1px solid #e5b5aa; border-radius: 8px; padding: 9px; font: inherit; }
+.cancel button { border: 0; border-radius: 9px; padding: 9px 12px; color: #fff; background: #a23d2c; }
+.warning { align-items: center; color: #8c5f14; background: #fff8e8; }
+.receipt, .refundStatus { align-items: center; }
+.receipt span, .refundStatus span { flex: 1; }
+.receipt strong, .receipt small, .refundStatus strong, .refundStatus small { display: block; }
+.receipt small, .refundStatus small { margin-top: 3px; color: var(--muted); }
+.receipt button, .refundStatus button { border: 0; border-radius: 9px; padding: 9px 12px; background: var(--green); color: #fff; }
+.refundStatus.pending { background: #fff8e8; color: #8c5f14; }
+.refundStatus.processed { background: #eaf6f2; color: var(--green); }
+.refundStatus.failed { background: #fff0ed; color: #923627; }
+@media (max-width: 900px) { .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .filters label:first-child { grid-column: 1 / -1; } .metrics, .detailGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .hero, .pagination, .items article, .cancel { align-items: flex-start; flex-direction: column; } .metrics, .detailGrid, .filters { grid-template-columns: 1fr; } .filters label:first-child { grid-column: auto; } .list > article { grid-template-columns: auto minmax(0, 1fr); } .list aside { grid-column: 2; text-align: left; } }

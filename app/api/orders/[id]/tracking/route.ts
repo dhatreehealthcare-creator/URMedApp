@@ -3,42 +3,54 @@ import { appendAuditEvent } from "../../../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../../../lib/auth-server";
 import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
 import { nextDeliveryStatuses, orderStatusForDeliveryStatus, workflowStatusLabels, type DeliveryMethod, type WorkflowRole } from "../../../../../lib/order-workflow";
-import { sendTransactionalEmail } from "../../../../../lib/resend";
+import { enqueueTransactionalEmail } from "../../../../../lib/transactional-email-outbox";
+import { canCustomerCancelOrder } from "../../../../../lib/customer-order-history";
+import { requireVendorPermission } from "../../../../../lib/vendor-access";
+import { prepareOnlineTaxInvoiceStatement } from "../../../../../lib/tax-invoice";
+import {
+  DeliveryLocationProofError,
+  validateDeliveryLocationProof,
+  type DeliveryLocationProof,
+} from "../../../../../lib/delivery-location";
 
 const allowedStatuses = new Set(["confirmed", "packed", "ready_for_pickup", "picked_up", "out_for_delivery", "delivered", "cancelled"]);
 
 type WorkflowOrder = {
-  id: number; orderNumber: string; vendorId: number; customerProfileId: number; customerEmail: string;
+  id: number; orderNumber: string; vendorId: number; customerProfileId: number;
   prescriptionStatus: string; paymentMethod: string; paymentStatus: string; deliveryMethod: DeliveryMethod;
   orderStatus: string; deliveryStatus: string;
 };
 
-function coordinate(value: unknown, minimum: number, maximum: number) {
-  const text = String(value ?? "").trim().slice(0, 40);
-  const number = Number(text);
-  return text && Number.isFinite(number) && number >= minimum && number <= maximum ? text : "";
+function privateJson(body: unknown, init: ResponseInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cache-Control", "private, no-store");
+  return Response.json(body, { ...init, headers });
 }
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
+    const authenticated = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
+    const { profile } = authenticated;
+    const vendorAccess = profile.role === "vendor"
+      ? await requireVendorPermission(request, "sale.write", authenticated)
+      : null;
     const orderId = Number((await context.params).id);
-    if (!Number.isInteger(orderId)) return Response.json({ error: "Order is invalid" }, { status: 400 });
+    if (!Number.isInteger(orderId)) return privateJson({ error: "Order is invalid" }, { status: 400 });
     const order = await getD1().prepare("SELECT id, customer_profile_id AS customerProfileId, vendor_id AS vendorId, delivery_method AS deliveryMethod FROM orders WHERE id = ?")
       .bind(orderId).first<{ id: number; customerProfileId: number; vendorId: number; deliveryMethod: string }>();
-    if (!order) return Response.json({ error: "Order not found" }, { status: 404 });
+    if (!order) return privateJson({ error: "Order not found" }, { status: 404 });
     const assigned = profile.role === "delivery" ? await getD1().prepare(`SELECT a.id FROM delivery_assignments a
       JOIN delivery_agents agent ON agent.id=a.agent_id WHERE a.order_id=? AND agent.profile_id=?
         AND a.status NOT IN ('cancelled') ORDER BY a.id DESC LIMIT 1`).bind(orderId,profile.id).first<{id:number}>() : null;
     const allowed = profile.role === "admin" || order.customerProfileId === profile.id
-      || (profile.role === "vendor" && order.vendorId === profile.vendorId)
+      || (profile.role === "vendor" && order.vendorId === vendorAccess?.vendorId)
       || (profile.role === "delivery" && order.deliveryMethod === "urmed" && Boolean(assigned));
-    if (!allowed) return Response.json({ error: "Order not found" }, { status: 404 });
+    if (!allowed) return privateJson({ error: "Order not found" }, { status: 404 });
     const events = await getD1().prepare(`SELECT e.status, e.note, e.latitude, e.longitude, e.created_at AS createdAt,
       COALESCE(actor.name, 'URMED system') AS actorName, COALESCE(actor.role, 'system') AS actorRole
       FROM delivery_events e LEFT JOIN account_profiles actor ON actor.id = e.actor_profile_id
       WHERE e.order_id = ? ORDER BY e.created_at, e.id`).bind(orderId).all();
-    return Response.json({ events: events.results });
+    return privateJson({ events: events.results });
   } catch (error) {
     return errorResponse(error);
   }
@@ -46,50 +58,77 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const { profile } = await requireLocalProfile(request, ["vendor", "admin", "delivery"]);
+    const authenticated = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
+    const { profile } = authenticated;
+    const vendorAccess = profile.role === "vendor"
+      ? await requireVendorPermission(request, "sale.write", authenticated)
+      : null;
     const orderId = Number((await context.params).id);
     const body = await request.json() as Record<string, unknown>;
     const status = String(body.status ?? "").trim();
-    if (!Number.isInteger(orderId) || !allowedStatuses.has(status)) return Response.json({ error: "Tracking update is invalid" }, { status: 400 });
+    if (!Number.isInteger(orderId) || !allowedStatuses.has(status)) return privateJson({ error: "Tracking update is invalid" }, { status: 400 });
     const db = getD1();
     const order = await db.prepare(`SELECT o.id, o.order_number AS orderNumber, o.vendor_id AS vendorId,
-      o.customer_profile_id AS customerProfileId, customer.email AS customerEmail,
+      o.customer_profile_id AS customerProfileId,
       o.prescription_status AS prescriptionStatus, o.payment_method AS paymentMethod,
       o.payment_status AS paymentStatus, o.delivery_method AS deliveryMethod,
       o.order_status AS orderStatus, o.delivery_status AS deliveryStatus
-      FROM orders o JOIN account_profiles customer ON customer.id = o.customer_profile_id WHERE o.id = ?`)
+      FROM orders o WHERE o.id = ?`)
       .bind(orderId).first<WorkflowOrder>();
-    if (!order || (profile.role === "vendor" && order.vendorId !== profile.vendorId)
+    if (!order || (profile.role === "customer" && order.customerProfileId !== profile.id)
+      || (profile.role === "vendor" && order.vendorId !== vendorAccess?.vendorId)
       || (profile.role === "delivery" && order.deliveryMethod !== "urmed")) {
-      return Response.json({ error: "Order not found" }, { status: 404 });
+      return privateJson({ error: "Order not found" }, { status: 404 });
     }
     if (profile.role === "delivery") {
       const assignment = await db.prepare(`SELECT a.id FROM delivery_assignments a JOIN delivery_agents agent ON agent.id=a.agent_id
         WHERE a.order_id=? AND agent.profile_id=? AND a.status NOT IN ('cancelled') ORDER BY a.id DESC LIMIT 1`).bind(orderId,profile.id).first<{id:number}>();
-      if(!assignment)return Response.json({error:"This delivery is not assigned to you"},{status:403});
+      if(!assignment)return privateJson({error:"This delivery is not assigned to you"},{status:403});
     }
     if (order.orderStatus === "completed" || order.orderStatus === "cancelled") {
-      if (order.deliveryStatus === status) return Response.json({ updated: false, unchanged: true });
-      return Response.json({ error: "A completed or cancelled order cannot be changed" }, { status: 409 });
+      if (order.deliveryStatus === status) return privateJson({ updated: false, unchanged: true });
+      return privateJson({ error: "A completed or cancelled order cannot be changed" }, { status: 409 });
     }
-    const permitted = nextDeliveryStatuses({
-      role: profile.role as WorkflowRole, deliveryMethod: order.deliveryMethod, deliveryStatus: order.deliveryStatus,
-      orderStatus: order.orderStatus, prescriptionStatus: order.prescriptionStatus,
-      paymentMethod: order.paymentMethod, paymentStatus: order.paymentStatus,
-    });
+    if (status === "cancelled" && order.paymentMethod === "online"
+      && ["paid", "refund_pending"].includes(order.paymentStatus)) {
+      return privateJson({ error: "Use the verified refund action to cancel a paid online order" }, { status: 409 });
+    }
+    const permitted = profile.role === "customer"
+      ? canCustomerCancelOrder(order) ? ["cancelled"] : []
+      : nextDeliveryStatuses({
+        role: profile.role as WorkflowRole, deliveryMethod: order.deliveryMethod, deliveryStatus: order.deliveryStatus,
+        orderStatus: order.orderStatus, prescriptionStatus: order.prescriptionStatus,
+        paymentMethod: order.paymentMethod, paymentStatus: order.paymentStatus,
+      });
     if (!permitted.includes(status)) {
-      return Response.json({ error: permitted.length
+      return privateJson({ error: permitted.length
         ? `The next allowed action is: ${permitted.map((item) => workflowStatusLabels[item]).join(" or ")}`
         : "This account cannot advance the order from its current stage" }, { status: 409 });
     }
 
     const note = String(body.note ?? "").trim().slice(0, 300);
-    if (status === "cancelled" && note.length < 5) return Response.json({ error: "Enter a clear cancellation reason" }, { status: 400 });
-    const latitude = coordinate(body.latitude, -90, 90);
-    const longitude = coordinate(body.longitude, -180, 180);
-    if (profile.role === "delivery" && ["picked_up", "out_for_delivery", "delivered"].includes(status) && (!latitude || !longitude)) {
-      return Response.json({ error: "Delivery latitude and longitude are required for this update" }, { status: 400 });
+    if (status === "cancelled" && note.length < 5) return privateJson({ error: "Enter a clear cancellation reason" }, { status: 400 });
+    let locationProof: DeliveryLocationProof | null = null;
+    if (profile.role === "delivery" && ["picked_up", "out_for_delivery", "delivered"].includes(status)) {
+      try {
+        locationProof = validateDeliveryLocationProof(body);
+      } catch (error) {
+        if (error instanceof DeliveryLocationProofError) return privateJson({ error: error.message }, { status: 400 });
+        throw error;
+      }
+      const claimed = await db.prepare(`UPDATE delivery_agents
+        SET current_latitude=?,current_longitude=?,updated_at=?
+        WHERE profile_id=? AND julianday(updated_at)<julianday(?)`)
+        .bind(locationProof.latitude, locationProof.longitude, locationProof.capturedAt, profile.id, locationProof.capturedAt).run();
+      if (!claimed.meta.changes) {
+        return privateJson({ error: "This delivery location proof was already used. Capture a fresh position" }, { status: 409 });
+      }
     }
+    const latitude = locationProof?.latitude ?? "";
+    const longitude = locationProof?.longitude ?? "";
+    const eventNote = locationProof
+      ? `${note || `Order ${workflowStatusLabels[status].toLowerCase()}`} · Browser GPS ${locationProof.capturedAt}, accuracy ${locationProof.accuracy}m`
+      : note || `Order ${workflowStatusLabels[status].toLowerCase()}`;
 
     const statements = [];
     if (status === "cancelled") {
@@ -111,6 +150,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           WHERE o.id = ? AND o.delivery_status = ? AND o.inventory_status='committed'
             AND o.order_status NOT IN ('completed', 'cancelled')
           GROUP BY i.vendor_id, i.id, i.quantity, o.id`).bind(note, profile.id, orderId, order.deliveryStatus),
+        db.prepare(`UPDATE orders SET inventory_status='released', updated_at=CURRENT_TIMESTAMP
+          WHERE id=? AND delivery_status=? AND inventory_status='committed'
+            AND order_status NOT IN ('completed','cancelled')`).bind(orderId, order.deliveryStatus),
       );
     }
     const eventIndex = statements.length;
@@ -118,7 +160,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       db.prepare(`INSERT INTO delivery_events (order_id, status, actor_profile_id, note, latitude, longitude)
         SELECT id, ?, ?, ?, ?, ? FROM orders
         WHERE id = ? AND delivery_status = ? AND order_status NOT IN ('completed', 'cancelled')`)
-        .bind(status, profile.id, note || `Order ${workflowStatusLabels[status].toLowerCase()}`, latitude, longitude, orderId, order.deliveryStatus),
+        .bind(status, profile.id, eventNote, latitude, longitude, orderId, order.deliveryStatus),
       db.prepare(`UPDATE orders SET delivery_status = ?, order_status = ?,
         payment_status = CASE WHEN ? = 'delivered' AND payment_method = 'cod' THEN 'paid' ELSE payment_status END,
         updated_at = CURRENT_TIMESTAMP
@@ -136,14 +178,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
     if (status === "delivered") {
       statements.push(
-        db.prepare(`INSERT INTO tax_invoices (invoice_number, vendor_id, source_type, source_id, seller_gstin,
-          buyer_gstin, place_of_supply_state_code, subtotal_paise, cgst_paise, sgst_paise, igst_paise, total_paise)
-          SELECT 'GST-' || o.order_number, o.vendor_id, 'online_order', o.id, v.gst_number, '',
-            o.place_of_supply_state_code, o.subtotal_paise, COALESCE(SUM(item.cgst_paise),0),
-            COALESCE(SUM(item.sgst_paise),0), COALESCE(SUM(item.igst_paise),0), o.total_paise
-          FROM orders o JOIN vendors v ON v.id=o.vendor_id JOIN order_items item ON item.order_id=o.id
-          WHERE o.id=? AND o.delivery_status='delivered' AND NOT EXISTS (SELECT 1 FROM tax_invoices invoice WHERE invoice.source_type='online_order' AND invoice.source_id=o.id)
-          GROUP BY o.id,o.order_number,o.vendor_id,v.gst_number,o.place_of_supply_state_code,o.subtotal_paise,o.total_paise`).bind(orderId),
+        prepareOnlineTaxInvoiceStatement(db, orderId, profile.id),
         db.prepare(`UPDATE orders SET invoice_id=(SELECT id FROM tax_invoices WHERE source_type='online_order' AND source_id=orders.id ORDER BY id DESC LIMIT 1) WHERE id=? AND delivery_status='delivered'`).bind(orderId),
         db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
           SELECT vendor_id,'CASH_BANK',date('now'),'Receipt for '||order_number,total_paise,0,'online_order',id,? FROM orders o
@@ -154,6 +189,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
           SELECT vendor_id,'GST_PAYABLE',date('now'),'GST for '||order_number,0,tax_paise,'online_order',id,? FROM orders o
           WHERE id=? AND delivery_status='delivered' AND tax_paise>0 AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.reference_type='online_order' AND l.reference_id=o.id AND l.account_code='GST_PAYABLE')`).bind(profile.id,orderId),
+        db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)
+          SELECT vendor_id,'DELIVERY_INCOME',date('now'),'Delivery income for '||order_number,0,delivery_fee_paise,'online_order',id,? FROM orders o
+          WHERE id=? AND delivery_status='delivered' AND delivery_fee_paise>0 AND NOT EXISTS (SELECT 1 FROM ledger_entries l WHERE l.reference_type='online_order' AND l.reference_id=o.id AND l.account_code='DELIVERY_INCOME')`).bind(profile.id,orderId),
         db.prepare(`INSERT INTO statutory_register_entries (vendor_id,register_type,serial_number,transaction_date,
           patient_name,patient_address,prescriber_name,prescriber_address,product_id,batch_number,quantity_supplied,
           source_type,source_id,pharmacist_id,retention_until)
@@ -182,12 +220,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       );
     }
     const results = await db.batch(statements);
-    if (!results[eventIndex]?.meta.changes) return Response.json({ error: "The order changed. Refresh before taking the next action." }, { status: 409 });
+    if (!results[eventIndex]?.meta.changes) return privateJson({ error: "The order changed. Refresh before taking the next action." }, { status: 409 });
 
-    await appendAuditEvent({ vendorId: order.vendorId, actorProfileId: profile.id, action: `order.${status}`, entityType: "order", entityId: orderId, before: { orderStatus: order.orderStatus, deliveryStatus: order.deliveryStatus }, after: { orderStatus: orderStatusForDeliveryStatus(status), deliveryStatus: status, note, latitude, longitude }, requestId: request.headers.get("cf-ray") ?? "" });
-    const refillMessage = status === "delivered" ? "<p>Estimated 30-day refill reminders were created for the delivered medicines. Review each date in your URMED account before reordering.</p>" : "";
-    await sendTransactionalEmail(order.customerEmail, `URMED order ${order.orderNumber}: ${workflowStatusLabels[status]}`, `<h2>${workflowStatusLabels[status]}</h2><p>Your order ${order.orderNumber} is now ${workflowStatusLabels[status].toLowerCase()}.</p>${refillMessage}`);
-    return Response.json({ updated: true, status, label: workflowStatusLabels[status] });
+    await appendAuditEvent({ vendorId: order.vendorId, actorProfileId: profile.id, action: `order.${status}`, entityType: "order", entityId: orderId, before: { orderStatus: order.orderStatus, deliveryStatus: order.deliveryStatus }, after: { orderStatus: orderStatusForDeliveryStatus(status), deliveryStatus: status, note, locationProof: locationProof ? { capturedAt: locationProof.capturedAt, accuracy: locationProof.accuracy } : undefined }, requestId: request.headers.get("cf-ray") ?? "" });
+    await enqueueTransactionalEmail(db, {
+      profileId: order.customerProfileId,
+      eventType: "order_status_changed",
+      payload: { orderNumber: order.orderNumber, status: workflowStatusLabels[status], refillCreated: status === "delivered" },
+      dedupeKey: `order_status:${orderId}:${status}`,
+    });
+    return privateJson({ updated: true, status, label: workflowStatusLabels[status] });
   } catch (error) {
     return errorResponse(error);
   }

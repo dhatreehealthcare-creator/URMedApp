@@ -13,15 +13,18 @@ test("each role has a dedicated route wired to its exact protected workspace", (
 });
 
 test("workspace authorization requires exact active role and completed vendor onboarding", () => {
-  for (const role of ["customer", "admin", "delivery"]) {
-    assert.equal(isWorkspaceRoleAuthorized({ role, status: "active", vendorAccessStatus: null }, role), true);
-    assert.equal(isWorkspaceRoleAuthorized({ role, status: "inactive", vendorAccessStatus: null }, role), false);
+  for (const role of ["admin", "delivery"]) {
+    assert.equal(isWorkspaceRoleAuthorized({ role, status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: null }, role), true);
+    assert.equal(isWorkspaceRoleAuthorized({ role, status: "inactive", emailVerified: true, phoneVerified: true, vendorAccessStatus: null }, role), false);
   }
-  assert.equal(isWorkspaceRoleAuthorized({ role: "vendor", status: "active", vendorAccessStatus: "operational" }, "vendor"), true);
-  assert.equal(isWorkspaceRoleAuthorized({ role: "vendor", status: "active", vendorAccessStatus: "registration_draft" }, "vendor"), false);
-  assert.equal(isWorkspaceRoleAuthorized({ role: "vendor", status: "active", vendorAccessStatus: "review_pending" }, "vendor"), false);
-  assert.equal(isWorkspaceRoleAuthorized({ role: "customer", status: "active", vendorAccessStatus: null }, "admin"), false);
-  assert.equal(isWorkspaceRoleAuthorized({ role: "admin", status: "active", vendorAccessStatus: null }, "vendor"), false);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "customer", status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: null }, "customer"), true);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "customer", status: "active", emailVerified: false, phoneVerified: true, vendorAccessStatus: null }, "customer"), false);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "customer", status: "active", emailVerified: true, phoneVerified: false, vendorAccessStatus: null }, "customer"), false);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "vendor", status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: "operational" }, "vendor"), true);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "vendor", status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: "registration_draft" }, "vendor"), false);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "vendor", status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: "review_pending" }, "vendor"), false);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "customer", status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: null }, "admin"), false);
+  assert.equal(isWorkspaceRoleAuthorized({ role: "admin", status: "active", emailVerified: true, phoneVerified: true, vendorAccessStatus: null }, "vendor"), false);
   assert.equal(isWorkspaceRoleAuthorized(null, "delivery"), false);
 });
 
@@ -30,6 +33,7 @@ test("the shared route gate mounts workspace content only after exact-role autho
   assert.match(gate, /const authorized = isWorkspaceRoleAuthorized\(profile, role\)/);
   assert.match(gate, /setProfile\(isRoleSessionAuthorized\(nextProfile, role\) \? nextProfile : null\)/);
   assert.match(gate, /role === "vendor" && !authorized/);
+  assert.match(gate, /role === "customer" && !authorized/);
   assert.match(gate, /<VendorSetup registrationMode/);
   assert.match(gate, /<AuthPanel role=\{role\} onProfileChange=\{updateProfile\}/);
   assert.match(gate, /authorized && \(role === "delivery"/);

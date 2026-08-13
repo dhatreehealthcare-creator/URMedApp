@@ -7,7 +7,7 @@ import {
   type VendorAccessStatus,
 } from "./identity-verification.ts";
 import { getRequiredRuntimeValue } from "./runtime-env.ts";
-import { sha256, TEST_TOKEN_PREFIX } from "./test-auth.ts";
+import { isTestAuthenticationEnabled, sha256, TEST_TOKEN_PREFIX } from "./test-auth.ts";
 export { errorResponse } from "./api-errors.ts";
 
 export type AuthUser = {
@@ -53,6 +53,9 @@ function bearerToken(request: Request): string {
 export async function requireAuthUser(request: Request): Promise<AuthUser> {
   const token = bearerToken(request);
   if (token.startsWith(TEST_TOKEN_PREFIX)) {
+    if (!isTestAuthenticationEnabled()) {
+      throw new Response("Your sign-in session is invalid or expired", { status: 401 });
+    }
     const tokenHash = await sha256(token);
     const testUser = await getD1().prepare(`
       SELECT p.auth_user_id AS id, account.email, account.phone, p.role,
@@ -150,6 +153,9 @@ export async function requireLocalProfile(
   if (!profile) throw new Response("Complete your URMED account profile first", { status: 403 });
   if (allowedRoles && !allowedRoles.includes(profile.role)) throw new Response("This account cannot perform that action", { status: 403 });
   if (profile.status !== "active") throw new Response("This account is not active", { status: 403 });
+  if (profile.role === "customer" && (!profile.emailVerified || !profile.phoneVerified)) {
+    throw new Response("Verify both the account email and mobile number before using customer operations", { status: 403 });
+  }
   if (profile.role === "vendor" && profile.vendorAccessStatus !== "operational" && !options.allowIncompleteVendor) {
     throw new Response("Complete verified vendor onboarding and administrator review before using pharmacy operations", { status: 403 });
   }
