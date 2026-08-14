@@ -39,7 +39,7 @@ type ReservationInput = {
   checksum: string;
 };
 
-const quotaStatuses = "('active','upload_pending')";
+const quotaStatuses = "('active','upload_pending','quarantined')";
 
 async function usage(database: D1Database, column: "owner_profile_id" | "vendor_id", id: number): Promise<Usage> {
   const row = await database.prepare(`SELECT COUNT(*) AS documentCount,
@@ -83,7 +83,7 @@ export async function reserveDocumentUpload(database: D1Database, input: Reserva
   await assertDocumentUploadQuota(database, input.ownerProfileId, input.vendorId, input.sizeBytes);
   const inserted = await database.prepare(`INSERT INTO stored_documents
     (owner_profile_id,vendor_id,purpose,object_key,original_filename,mime_type,size_bytes,sha256,malware_status,status)
-    SELECT ?,?,?,?,?,?,?,?,'content_validated','upload_pending'
+    SELECT ?,?,?,?,?,?,?,?,'pending_scan','upload_pending'
     WHERE (SELECT COUNT(*) FROM stored_documents
       WHERE owner_profile_id=? AND status IN ${quotaStatuses}) < ?
       AND (SELECT COALESCE(SUM(size_bytes),0) FROM stored_documents

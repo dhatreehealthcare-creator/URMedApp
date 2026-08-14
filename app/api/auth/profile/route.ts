@@ -3,6 +3,7 @@ import { errorResponse, getLocalProfile, requireAuthUser, synchronizeProviderIde
 import { providerVerificationState } from "../../../../lib/identity-verification";
 import { IdentityConflictError } from "../../../../lib/identity-conflicts";
 import { getCustomerOnboardingState } from "../../../../lib/customer-registration";
+import { enforceRateLimit } from "../../../../lib/abuse-controls";
 
 const roles = new Set(["customer", "vendor"]);
 const privateResponseHeaders = { "Cache-Control": "private, no-store" };
@@ -11,6 +12,8 @@ export async function GET(request: Request) {
   try {
     const user = await requireAuthUser(request);
     const profile = await synchronizeProviderIdentity(user);
+    const limited = await enforceRateLimit(request, "auth", { profileId: profile?.id ?? null });
+    if (limited) return limited;
     const onboarding = profile?.role === "customer" ? getCustomerOnboardingState(profile) : null;
     return Response.json({ user: { id: user.id, email: user.email ?? "", phone: user.phone ?? "" }, profile, onboarding }, { headers: privateResponseHeaders });
   } catch (error) {
@@ -21,6 +24,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const user = await requireAuthUser(request);
+    const limited = await enforceRateLimit(request, "auth");
+    if (limited) return limited;
     const body = await request.json() as Record<string, unknown>;
     const role = String(body.role ?? user.user_metadata?.role ?? "customer").toLowerCase();
     if (!roles.has(role)) return Response.json({ error: "Choose customer or vendor" }, { status: 400 });

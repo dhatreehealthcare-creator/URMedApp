@@ -4,10 +4,14 @@ import { captureOnlineOrderPayment, InventoryReservationError } from "../../../.
 import { fetchRazorpayPayment, RazorpayProviderError } from "../../../../../lib/razorpay";
 import { getRequiredRuntimeValue } from "../../../../../lib/runtime-env";
 import { constantTimeEqual, hmacHex } from "../../../../../lib/signatures";
+import { enforceRateLimit } from "../../../../../lib/abuse-controls";
+import { safeRecordOperationalEvent } from "../../../../../lib/operational-monitoring";
 
 export async function POST(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["customer"]);
+    const limited = await enforceRateLimit(request, "payment", { profileId: profile.id });
+    if (limited) return limited;
     const body = await request.json() as Record<string, unknown>;
     const razorpayOrderId = String(body.razorpay_order_id ?? "");
     const razorpayPaymentId = String(body.razorpay_payment_id ?? "");
@@ -38,7 +42,10 @@ export async function POST(request: Request) {
       return Response.json({ verified: true, duplicate: result.duplicate, orderId: order.id });
     } catch (error) {
       if (error instanceof InventoryReservationError) return Response.json({ error: error.message }, { status: error.status });
-      if (error instanceof RazorpayProviderError) return Response.json({ error: error.message }, { status: error.status });
+      if (error instanceof RazorpayProviderError) {
+        await safeRecordOperationalEvent({ db, eventKey: `payment-verify:provider-failure:${order.id}:${Date.now()}`, category: "payment", severity: "error", provider: "razorpay", profileId: profile.id, referenceType: "order", referenceId: order.id, errorCode: "provider_payment_failed", retryable: true, detail: { providerStatus: error.status } });
+        return Response.json({ error: error.message }, { status: error.status });
+      }
       throw error;
     }
   } catch (error) {

@@ -10,6 +10,8 @@ import {
   readBoundedRequestText,
   RequestBodyTooLargeError,
 } from "../../../../lib/bounded-request-body.ts";
+import { enforceRateLimit } from "../../../../lib/abuse-controls.ts";
+import { safeRecordOperationalEvent } from "../../../../lib/operational-monitoring.ts";
 
 type PaymentEntity = {
   id?: string;
@@ -64,9 +66,14 @@ async function appendWebhookAudit(input: {
 export async function POST(request: Request) {
   try {
     const raw = await readBoundedRequestText(request, RAZORPAY_WEBHOOK_MAX_BYTES);
+    const limited = await enforceRateLimit(request, "webhook");
+    if (limited) return limited;
     const received = request.headers.get("x-razorpay-signature") ?? "";
     const expected = await hmacHex(getRequiredRuntimeValue("RAZORPAY_WEBHOOK_SECRET"), raw);
-    if (!constantTimeEqual(expected, received)) return Response.json({ error: "Invalid webhook signature" }, { status: 401 });
+    if (!constantTimeEqual(expected, received)) {
+      try { await safeRecordOperationalEvent({ db: getD1(), eventKey: `webhook:invalid-signature:${await sha256Hex(raw)}`, category: "webhook", severity: "warning", provider: "razorpay", referenceType: "webhook", errorCode: "invalid_signature", requestId: request.headers.get("cf-ray") ?? "", retryable: false, detail: { rejected: true } }); } catch { /* monitoring is non-blocking */ }
+      return Response.json({ error: "Invalid webhook signature" }, { status: 401 });
+    }
     const payload = JSON.parse(raw) as RazorpayWebhook;
     const eventType = payload.event ?? "unknown";
     const payment = payload.payload?.payment?.entity;
@@ -96,7 +103,10 @@ export async function POST(request: Request) {
 
     const inserted = await db.prepare("INSERT OR IGNORE INTO payment_events (provider_event_id, order_id, event_type, payload_hash) VALUES (?, ?, ?, ?)")
       .bind(providerEventId, order?.id ?? null, eventType, await sha256Hex(raw)).run();
-    if (!inserted.meta.changes) return Response.json({ received: true, duplicate: true });
+    if (!inserted.meta.changes) {
+      await safeRecordOperationalEvent({ db, eventKey: `webhook:duplicate:${providerEventId}`, category: "webhook", severity: "info", provider: "razorpay", referenceType: "provider_event", referenceId: providerEventId, errorCode: "duplicate_replay", detail: { duplicate: true } });
+      return Response.json({ received: true, duplicate: true });
+    }
 
     try {
       if (order && payment && eventType === "payment.captured") {
@@ -163,6 +173,7 @@ export async function POST(request: Request) {
         });
       }
     } catch (error) {
+      await safeRecordOperationalEvent({ db, eventKey: `webhook:processing-failure:${providerEventId}`, category: "webhook", severity: "error", provider: "razorpay", vendorId: order?.vendorId ?? null, referenceType: "provider_event", referenceId: providerEventId, errorCode: error instanceof PaymentLifecycleError || error instanceof InventoryReservationError ? "lifecycle_rejected" : "processing_failed", retryable: true, detail: { error: error instanceof Error ? error.name : "unknown" } });
       await db.prepare("DELETE FROM payment_events WHERE provider_event_id=?").bind(providerEventId).run();
       if (error instanceof InventoryReservationError || error instanceof PaymentLifecycleError) {
         return Response.json({ error: error.message }, { status: error.status });

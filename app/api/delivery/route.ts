@@ -7,6 +7,7 @@ import {
   deliveryTimestampMs,
   validateDeliveryLocationProof,
 } from "../../../lib/delivery-location";
+import { enforceRateLimit } from "../../../lib/abuse-controls";
 
 type DeliveryAgentState = {
   id: number;
@@ -70,6 +71,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["delivery"]);
+    const limited = await enforceRateLimit(request, "gps", { profileId: profile.id });
+    if (limited) return limited;
     const body = await request.json() as Record<string, unknown>;
     const availability = String(body.availabilityStatus ?? "");
     if (!["available", "online", "offline"].includes(availability)) {

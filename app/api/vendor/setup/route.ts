@@ -36,7 +36,7 @@ async function verifiedVendorDocument(vendorId: number, documentId: unknown, pur
   }
   const row = await getD1().prepare(`
     SELECT id FROM stored_documents
-    WHERE id = ? AND vendor_id = ? AND purpose = ? AND status = 'active' AND malware_status = 'content_validated'
+    WHERE id = ? AND vendor_id = ? AND purpose = ? AND status = 'active' AND malware_status IN ('clean','content_validated')
     LIMIT 1
   `).bind(id, vendorId, purpose).first<{ id: number }>();
   if (!row) throw new Response("The uploaded document could not be verified for this pharmacy", { status: 400 });

@@ -2,6 +2,7 @@ import { prepareAuditEventStatement } from "./audit.ts";
 import { emailChannelEligibility, type NotificationCategory } from "./notification-preferences.ts";
 import { sendTransactionalEmail, type TransactionalEmailSendResult } from "./resend.ts";
 import { TRANSACTIONAL_EMAIL_OUTBOX_CRON } from "./scheduled-job-config.ts";
+import { safeRecordOperationalEvent } from "./operational-monitoring.ts";
 
 export { TRANSACTIONAL_EMAIL_OUTBOX_CRON };
 export const EMAIL_OUTBOX_POLICY_VERSION = "URMED-EMAIL-OUTBOX-2026.1";
@@ -237,7 +238,23 @@ async function transitionClaimed(db: D1Database, row: OutboxRow, leaseOwner: str
     WHERE outbox_id=? OR dedupe_key=?`).bind(input.status, input.providerMessageId ?? "", row.attemptCount,
     input.errorCode ?? "", input.errorReason ?? "", input.status, input.now, input.now, row.id, row.dedupeKey);
   const results = await db.batch([update, evidence]);
-  return Number(results[0]?.meta.changes ?? 0) === 1;
+  const changed = Number(results[0]?.meta.changes ?? 0) === 1;
+  if (changed) await safeRecordOperationalEvent({
+    db,
+    eventKey: `email-outbox:${row.id}:${row.attemptCount}:${input.status}`,
+    category: "email",
+    severity: input.status === "sent" ? "info" : input.status === "dead_letter" ? "critical" : "warning",
+    provider: "resend",
+    profileId: row.profileId,
+    referenceType: "transactional_email_outbox",
+    referenceId: row.id,
+    errorCode: input.errorCode ?? (input.status === "sent" ? "delivery_succeeded" : "delivery_retry"),
+    attemptCount: row.attemptCount,
+    retryable: input.status === "retry_wait",
+    detail: { status: input.status, eventType: row.eventType },
+    occurredAt: input.now,
+  });
+  return changed;
 }
 
 export async function processTransactionalEmailOutbox(input: {

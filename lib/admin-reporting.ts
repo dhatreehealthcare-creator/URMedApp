@@ -69,6 +69,13 @@ export function parseReportDateRange(parameters: URLSearchParams, now = new Date
   return { dateFrom, dateTo, days };
 }
 
+function reportTimestampBounds(dates: { dateFrom: string; dateTo: string }) {
+  const from = `${dates.dateFrom}T00:00:00.000Z`;
+  const to = new Date(`${dates.dateTo}T00:00:00.000Z`);
+  to.setUTCDate(to.getUTCDate() + 1);
+  return { from, to: to.toISOString() };
+}
+
 function pagination(parameters: URLSearchParams, exportMode = false) {
   if (exportMode) return { page: 1, pageSize: REPORT_EXPORT_MAX_ROWS + 1 };
   return {
@@ -243,6 +250,7 @@ type SalesRow = {
 export async function loadAdminSalesReport(database: D1Database, url: URL) {
   const parameters = url.searchParams;
   const dates = parseReportDateRange(parameters);
+  const timestamps = reportTimestampBounds(dates);
   const exportMode = ["csv", "xlsx", "pdf"].includes(parameters.get("format") ?? "");
   const { page, pageSize } = pagination(parameters, exportMode);
   const groupBy = choice(parameters.get("groupBy"), ["date", "medicine"] as const, "date");
@@ -267,7 +275,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
     quantity: "soldQuantity-returnedQuantity",
   };
   const common = `WITH activity AS (
-    SELECT date(invoice.issued_at) AS activityDate,'online' AS channel,o.vendor_id AS vendorId,
+    SELECT invoice.issued_at AS activityAt,date(invoice.issued_at) AS activityDate,'online' AS channel,o.vendor_id AS vendorId,
       item.product_id AS productId,p.name AS medicineName,
       COALESCE(m.name,NULLIF(trim(p.manufacturer),''),'Unknown manufacturer') AS manufacturerName,
       'online:'||o.id AS saleKey,'' AS returnKey,item.quantity AS soldQuantity,0 AS returnedQuantity,
@@ -277,14 +285,14 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
     JOIN tax_invoices invoice ON invoice.source_type='online_order' AND invoice.source_id=o.id
     WHERE o.order_status='completed'
     UNION ALL
-    SELECT date(event.created_at),'offline',sale.vendor_id,item.product_id,p.name,
+    SELECT event.created_at,date(event.created_at),'offline',sale.vendor_id,item.product_id,p.name,
       COALESCE(m.name,NULLIF(trim(p.manufacturer),''),'Unknown manufacturer'),
       'offline:'||sale.id,'',item.quantity,0,item.line_total_paise,0
     FROM offline_sales sale JOIN offline_sale_events event ON event.offline_sale_id=sale.id AND event.event_type='completed'
     JOIN offline_sale_items item ON item.offline_sale_id=sale.id JOIN products p ON p.id=item.product_id
     LEFT JOIN manufacturers m ON m.id=p.manufacturer_id
     UNION ALL
-    SELECT date(return_record.created_at),return_record.source_type,return_record.vendor_id,
+    SELECT return_record.created_at,date(return_record.created_at),return_record.source_type,return_record.vendor_id,
       inventory.product_id,p.name,COALESCE(m.name,NULLIF(trim(p.manufacturer),''),'Unknown manufacturer'),
       '',return_record.source_type||':'||return_record.id,0,return_item.quantity,0,return_item.amount_paise
     FROM sales_returns return_record JOIN sales_return_items return_item ON return_item.sales_return_id=return_record.id
@@ -292,7 +300,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
     LEFT JOIN manufacturers m ON m.id=p.manufacturer_id
     WHERE return_record.status='completed' AND return_record.source_type IN ('online','offline')
   ), filtered AS (
-    SELECT * FROM activity WHERE activityDate BETWEEN ? AND ? AND (?='all' OR channel=?)
+    SELECT * FROM activity WHERE activityAt >= ? AND activityAt < ? AND (?='all' OR channel=?)
       AND (? IS NULL OR vendorId=?) AND (?='' OR lower(medicineName) LIKE ? ESCAPE '\\'
         OR lower(manufacturerName) LIKE ? ESCAPE '\\')
   ), grouped AS (
@@ -304,7 +312,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
       SUM(grossSalesPaise)-SUM(returnedPaise) AS netSalesPaise
     FROM filtered GROUP BY ${groupedBy}
   )`;
-  const binds = [dates.dateFrom, dates.dateTo, channel, channel, vendorId, vendorId, query, search, search];
+  const binds = [timestamps.from, timestamps.to, channel, channel, vendorId, vendorId, query, search, search];
   const [rowsResult, summary] = await Promise.all([
     database.prepare(`${common} SELECT * FROM grouped ORDER BY ${sortExpression[sort]} ${direction.toUpperCase()},channel,groupKey LIMIT ? OFFSET ?`)
       .bind(...binds, pageSize, (page - 1) * pageSize).all<SalesRow>(),
@@ -417,6 +425,7 @@ export function calculateDeliveryReportRow(candidate: DeliveryCandidate, slaTarg
 export async function loadAdminDeliveryReport(database: D1Database, url: URL, now = new Date()) {
   const parameters = url.searchParams;
   const dates = parseReportDateRange(parameters, now, 92);
+  const timestamps = reportTimestampBounds(dates);
   const exportMode = ["csv", "xlsx", "pdf"].includes(parameters.get("format") ?? "");
   const { page, pageSize } = pagination(parameters, exportMode);
   const method = choice(parameters.get("method"), ["all", "pharmacy", "urmed"] as const, "all");
@@ -454,13 +463,13 @@ export async function loadAdminDeliveryReport(database: D1Database, url: URL, no
       WHERE latest.order_id=o.id AND latest.status<>'cancelled' ORDER BY latest.id DESC LIMIT 1)
     LEFT JOIN delivery_agents agent ON agent.id=assignment.agent_id
     LEFT JOIN account_profiles rider_profile ON rider_profile.id=agent.profile_id
-    WHERE o.delivery_method IN ('pharmacy','urmed') AND date(o.created_at) BETWEEN ? AND ?
+    WHERE o.delivery_method IN ('pharmacy','urmed') AND o.created_at >= ? AND o.created_at < ?
       AND (? IS NULL OR o.vendor_id=?) AND (?='all' OR o.delivery_method=?)
       AND (?='all' OR o.delivery_status=?)
       AND (?='' OR lower(o.order_number) LIKE ? ESCAPE '\\' OR lower(v.business_name) LIKE ? ESCAPE '\\'
         OR lower(COALESCE(rider_profile.name,'')) LIKE ? ESCAPE '\\')
     ORDER BY o.created_at DESC,o.id DESC LIMIT ${REPORT_QUERY_MAX_ROWS + 1}`)
-    .bind(dates.dateFrom, dates.dateTo, vendorId, vendorId, method, method, status, status, query, search, search, search)
+    .bind(timestamps.from, timestamps.to, vendorId, vendorId, method, method, status, status, query, search, search, search)
     .all<DeliveryCandidate>();
   if (candidates.results.length > REPORT_QUERY_MAX_ROWS) {
     throw new AdminReportError(`This delivery report contains more than ${REPORT_QUERY_MAX_ROWS.toLocaleString()} candidate rows; narrow the date range or filters`, 422);

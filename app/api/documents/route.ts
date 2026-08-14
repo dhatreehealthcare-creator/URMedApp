@@ -3,6 +3,8 @@ import { getR2 } from "../../../db/storage";
 import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
 import { DocumentUploadQuotaError, documentUploadQuotaResponse, reserveDocumentUpload } from "../../../lib/document-upload-quota";
+import { scanDocumentBytes } from "../../../lib/document-malware";
+import { enforceRateLimit } from "../../../lib/abuse-controls";
 import { requireVendorOnboardingAccess, requireVendorPermission } from "../../../lib/vendor-access";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -32,6 +34,8 @@ export async function POST(request: Request) {
   let documentId = 0;
   try {
     const { profile } = await requireLocalProfile(request, ["customer", "vendor", "delivery"], { allowIncompleteVendor: true });
+    const limited = await enforceRateLimit(request, "upload", { profileId: profile.id });
+    if (limited) return limited;
     const form = await request.formData();
     const file = form.get("file");
     const purpose = String(form.get("purpose") ?? "").trim();
@@ -49,6 +53,7 @@ export async function POST(request: Request) {
     const buffer = await file.arrayBuffer();
     const bytes = new Uint8Array(buffer.slice(0, 16));
     if (!matchesSignature(extension, bytes)) return Response.json({ error: "The document contents do not match its file type" }, { status: 400 });
+    const malwareScan = scanDocumentBytes(new Uint8Array(buffer));
 
     let vendorId: number | null = null;
     if (purpose === "drug_licence" || purpose === "pharmacist_registration") {
@@ -61,7 +66,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Only a customer may upload a prescription" }, { status: 403 });
     }
     const checksum = await sha256Hex(buffer);
-    const candidateObjectKey = `${purpose}/${vendorId ?? profile.id}/${crypto.randomUUID()}.${extension}`;
+    const candidateObjectKey = `${malwareScan.status === "quarantined" ? "quarantine" : purpose}/${vendorId ?? profile.id}/${crypto.randomUUID()}.${extension}`;
     const db = getD1();
     documentId = await reserveDocumentUpload(db, {
       ownerProfileId: profile.id,
@@ -76,13 +81,20 @@ export async function POST(request: Request) {
     objectKey = candidateObjectKey;
     await getR2().put(objectKey, buffer, {
       httpMetadata: { contentType: declaredMime, contentDisposition: `inline; filename="${filename.replaceAll('"', "")}"` },
-      customMetadata: { purpose, sha256: checksum, ownerProfileId: String(profile.id), vendorId: String(vendorId ?? "") },
+      customMetadata: { purpose, sha256: checksum, malwareScan: malwareScan.status, ownerProfileId: String(profile.id), vendorId: String(vendorId ?? "") },
     });
-    const activated = await db.prepare(`UPDATE stored_documents SET status='active'
-      WHERE id=? AND owner_profile_id=? AND status='upload_pending'`).bind(documentId, profile.id).run();
+    if (malwareScan.status === "quarantined") {
+      await db.prepare(`UPDATE stored_documents SET status='quarantined', malware_status='quarantined',
+        retention_until=? WHERE id=? AND owner_profile_id=? AND status='upload_pending'`)
+        .bind(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), documentId, profile.id).run();
+      await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "document.quarantined", entityType: "stored_document", entityId: documentId, after: { purpose, filename, reason: malwareScan.reason }, requestId: request.headers.get("cf-ray") ?? "" }, db);
+      return Response.json({ error: "The document was quarantined for security review", code: "document_quarantined" }, { status: 422, headers: { "Cache-Control": "private, no-store" } });
+    }
+    const activated = await db.prepare(`UPDATE stored_documents SET status='active', malware_status='clean'
+      WHERE id=? AND owner_profile_id=? AND status='upload_pending' AND malware_status='pending_scan'`).bind(documentId, profile.id).run();
     if (!activated.meta.changes) throw new Error("Document metadata changed before upload activation");
     await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: "document.uploaded", entityType: "stored_document", entityId: documentId, after: { purpose, filename, sizeBytes: file.size, sha256: checksum }, requestId: request.headers.get("cf-ray") ?? "" });
-    return Response.json({ document: { id: documentId, filename, purpose, sizeBytes: file.size, status: "content_validated" } }, { status: 201 });
+    return Response.json({ document: { id: documentId, filename, purpose, sizeBytes: file.size, status: "clean" } }, { status: 201 });
   } catch (error) {
     if (objectKey) {
       try { await getR2().delete(objectKey); } catch { /* best-effort R2 rollback */ }

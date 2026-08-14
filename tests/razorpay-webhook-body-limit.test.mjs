@@ -73,6 +73,13 @@ test("normal signed Razorpay webhook payloads remain compatible", async () => {
   globalThis.__URMED_RUNTIME__ = { RAZORPAY_WEBHOOK_SECRET: secret };
   globalThis.__URMED_D1__ = {
     prepare(sql) {
+      if (sql.includes("abuse_rate_limit_buckets")) {
+        return {
+          bind() { return this; },
+          async run() { return { meta: { changes: 0 } }; },
+          async first() { return { requestCount: 1 }; },
+        };
+      }
       assert.match(sql, /INSERT OR IGNORE INTO payment_events/);
       return {
         bind() { return this; },

@@ -873,6 +873,23 @@ export async function runPhase0IntegrationSuite() {
     assert.doesNotMatch(outside.text, /\d+(?:\.\d+)?\s*km/i);
   });
 
+  await scenario("public search rate limits are durable, private, and reset by window", async () => {
+    const probeIp = "198.51.100.240";
+    const responses = await Promise.all(Array.from({ length: 60 }, () => api("/api/catalog?q=paracetamol", {
+        headers: { "cf-connecting-ip": probeIp },
+      })));
+    assert.equal(responses.every((result) => result.status !== 429), true);
+    const limited = await api("/api/catalog?q=paracetamol", {
+      headers: { "cf-connecting-ip": probeIp },
+    });
+    assert.equal(limited.status, 429);
+    assert.equal(limited.payload?.code, "rate_limited");
+    assert.match(limited.response.headers.get("cache-control") ?? "", /no-store/i);
+    assert.equal(Number(limited.response.headers.get("retry-after")) >= 1, true);
+    assert.equal(limited.response.headers.get("x-ratelimit-remaining"), "0");
+    assert.doesNotMatch(limited.text, /198\.51\.100\.240/);
+  });
+
   await scenario("provider claims gate vendor onboarding and synchronize idempotently", async () => {
     const emailPending = await login("vendor-email-pending@urmed.test");
     const phonePending = await login("vendor-phone-pending@urmed.test");
@@ -1712,6 +1729,20 @@ export async function runPhase0IntegrationSuite() {
     assert.equal(after.payload.items.length, queued.payload.items.length);
   });
 
+  await scenario("structured operational monitoring is sanitized, admin-only, and scheduled-job idempotent", async () => {
+    const first = await triggerScheduled("*/15 * * * *");
+    if (first.status !== 200) throw new Error(`monitoring reminder schedule: ${first.text}`);
+    const repeated = await triggerScheduled("*/15 * * * *");
+    if (repeated.status !== 200) throw new Error(`monitoring repeated schedule: ${repeated.text}`);
+    const admin = await expectStatus(api("/api/admin/monitoring?status=all&pageSize=100", { token: context.tokens.admin }), 200, "admin monitoring");
+    assert.equal(admin.response.headers.get("cache-control"), "private, no-store");
+    assert.ok(Array.isArray(admin.payload?.events));
+    assert.ok(admin.payload.events.some((event) => event.category === "scheduled_job"));
+    assert.equal(admin.payload.events.some((event) => "detailJson" in event), false);
+    await expectStatus(api("/api/admin/monitoring", { token: context.tokens.customer }), 403, "customer monitoring denied");
+    await expectStatus(api("/api/admin/monitoring", { token: context.tokens.vendor }), 403, "vendor monitoring denied");
+  });
+
   await scenario("customer reminders are durable, preference-aware, retryable, and duplicate-safe", async () => {
     await prepareReminder("customer@urmed.test");
     const safety = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "customer reminder safety read");
@@ -2228,6 +2259,11 @@ export async function runPhase0IntegrationSuite() {
       invalid.set("file", new File([bytes], filename, { type: mime }));
       await expectStatus(api("/api/documents", { token: context.tokens.customer, body: invalid }), 400, filename);
     }
+    const quarantined = new FormData();
+    quarantined.set("purpose", "prescription");
+    quarantined.set("file", new File([Buffer.concat([png, Buffer.from("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*")])], "eicar-prescription.png", { type: "image/png" }));
+    const quarantinedResponse = await expectStatus(api("/api/documents", { token: context.tokens.customer, body: quarantined }), 422, "EICAR document quarantine");
+    assert.equal(quarantinedResponse.payload.code, "document_quarantined");
     const failing = new FormData();
     failing.set("purpose", "prescription");
     failing.set("file", new File([png], "metadata-failure.png", { type: "image/png" }));
@@ -2442,6 +2478,7 @@ export async function runPhase0IntegrationSuite() {
     assert.equal(evidence.document.sha256, "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460");
     assert.equal(evidence.document.status, "active");
     assert.equal(evidence.documentMetadataFailures, 0);
-    assert.equal(evidence.r2PayloadCount, context.objectsBefore + 1);
+    assert.equal(evidence.quarantinedDocuments, 1);
+    assert.equal(evidence.r2PayloadCount, context.objectsBefore + 2, "clean upload plus quarantined object are retained in isolated R2");
   });
 }

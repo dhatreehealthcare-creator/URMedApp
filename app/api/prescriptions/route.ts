@@ -93,7 +93,7 @@ export async function POST(request: Request) {
     const vendor = await db.prepare(`SELECT v.id FROM vendors v WHERE v.id = ? AND ${operationalVendor} LIMIT 1`).bind(vendorId).first();
     if (!vendor) return Response.json({ error: "The selected pharmacy cannot receive prescriptions" }, { status: 409 });
     const document = await db.prepare(`SELECT id FROM stored_documents WHERE id = ? AND owner_profile_id = ?
-      AND purpose = 'prescription' AND status = 'active' AND malware_status = 'content_validated' LIMIT 1`).bind(documentId, profile.id).first();
+      AND purpose = 'prescription' AND status = 'active' AND malware_status IN ('clean','content_validated') LIMIT 1`).bind(documentId, profile.id).first();
     if (!document) return Response.json({ error: "The uploaded prescription document could not be verified" }, { status: 400 });
 
     let prescriptionId: number;

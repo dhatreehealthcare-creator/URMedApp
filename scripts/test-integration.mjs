@@ -8,6 +8,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Log, LogLevel, Miniflare } from "miniflare";
+import { createLocalBackup, verifyLocalRestore } from "./backup-recovery-lib.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wrangler = path.join(projectRoot, "node_modules", ".bin", "wrangler");
@@ -624,6 +625,7 @@ try {
         recoveryTotals: one("SELECT SUM(orders_released) AS ordersReleased,SUM(reservations_released) AS reservationsReleased FROM inventory_reservation_recovery_runs"),
         document: one("SELECT object_key AS objectKey,mime_type AS mimeType,size_bytes AS sizeBytes,sha256,status FROM stored_documents WHERE id=?", context.documentId),
         documentMetadataFailures: one("SELECT COUNT(*) AS count FROM stored_documents WHERE original_filename='metadata-failure.png'").count,
+        quarantinedDocuments: one("SELECT COUNT(*) AS count FROM stored_documents WHERE original_filename='eicar-prescription.png' AND status='quarantined' AND malware_status='quarantined'").count,
         r2PayloadCount: await countR2PayloadFiles(path.join(state, "v3", "r2")),
       };
     } finally {
@@ -639,6 +641,28 @@ try {
   const { runPhase0IntegrationSuite } = await import(pathToFileURL(integrationTests).href);
   await runPhase0IntegrationSuite();
   console.log("[integration] Phase 0 D1/R2 API integration suite passed");
+  const backupDir = path.join(temporaryRoot, "backup-recovery");
+  const restoreDir = path.join(temporaryRoot, "restore-recovery");
+  const backup = await createLocalBackup({
+    d1Path,
+    r2Path: path.join(state, "v3", "r2"),
+    outputDir: backupDir,
+    migrationsDir: path.join(projectRoot, "drizzle"),
+    timestamp: "2026-08-14T00:00:00.000Z",
+  });
+  const recovery = await verifyLocalRestore({
+    backupDir,
+    outputDir: restoreDir,
+    migrationsDir: path.join(projectRoot, "drizzle"),
+  });
+  if (recovery.status !== "verified" || recovery.contentSha256 !== backup.report.contentSha256) {
+    throw new Error("Local D1/R2 backup and restore verification did not produce matching evidence");
+  }
+  console.log("[integration] Local D1/R2 backup checksum and restore drill passed", {
+    contentSha256: recovery.contentSha256,
+    migrationCount: recovery.migration.count,
+    r2ObjectCount: recovery.r2.objectCount,
+  });
 } catch (error) {
   process.exitCode = 1;
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));

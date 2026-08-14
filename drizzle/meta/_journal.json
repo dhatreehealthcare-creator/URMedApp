@@ -421,6 +421,34 @@
       "when": 1786595000000,
       "tag": "0059_reminder_delivery_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "6",
+      "when": 1786596000000,
+      "tag": "0060_report_delivery_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "6",
+      "when": 1786597000000,
+      "tag": "0061_document_quarantine_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "6",
+      "when": 1786598000000,
+      "tag": "0062_durable_abuse_buckets",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": 6,
+      "when": 1786599000000,
+      "tag": "0063_operational_monitoring",
+      "breakpoints": true
     }
   ]
 }

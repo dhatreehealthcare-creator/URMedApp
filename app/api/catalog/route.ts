@@ -2,6 +2,7 @@ import { getD1 } from "../../../db/d1";
 import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
 import { attachPublishedVendorLocation } from "../../../lib/vendor-public-location";
 import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
+import { enforceRateLimit } from "../../../lib/abuse-controls";
 
 type CatalogRow = {
   legacyId: number;
@@ -21,6 +22,8 @@ type CatalogRow = {
 
 export async function GET(request: Request) {
   try {
+    const limited = await enforceRateLimit(request, "public_search");
+    if (limited) return limited;
     const url = new URL(request.url);
     const query = url.searchParams.get("q")?.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() ?? "";
     const requestedLimit = Number(url.searchParams.get("limit") ?? 20);

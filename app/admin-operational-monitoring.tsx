@@ -1,0 +1,16 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
+import { authenticatedFetch } from "./marketplace-client";
+
+type Alert = { id: number; category: string; severity: string; status: string; provider: string; occurrenceCount: number; lastSeen: string; lastErrorCode: string; version: number };
+type Payload = { alerts: Alert[]; events: Array<{ id: number; category: string; severity: string; errorCode: string; occurredAt: string }>; error?: string };
+
+export function AdminOperationalMonitoring() {
+  const [data, setData] = useState<Payload | null>(null); const [status, setStatus] = useState("open"); const [error, setError] = useState(""); const [busy, setBusy] = useState(0);
+  const load = useCallback(async () => { const response = await authenticatedFetch(`/api/admin/monitoring?status=${status}`, { cache: "no-store" }); const body = await response.json() as Payload; if (!response.ok) throw new Error(body.error || "Monitoring is unavailable"); setData(body); }, [status]);
+  useEffect(() => { queueMicrotask(() => { void load().catch((e) => setError(e instanceof Error ? e.message : "Monitoring is unavailable")); }); }, [load]);
+  const update = async (alert: Alert, action: "acknowledge" | "resolve") => { setBusy(alert.id); setError(""); try { const response = await authenticatedFetch("/api/admin/monitoring", { method: "PATCH", body: JSON.stringify({ id: alert.id, version: alert.version, action, reason: action === "resolve" ? "Reviewed by administrator" : "Acknowledged by administrator" }) }); if (!response.ok) throw new Error("Monitoring update failed"); await load(); } catch (e) { setError(e instanceof Error ? e.message : "Monitoring update failed"); } finally { setBusy(0); } };
+  return <section className="portal-panel"><div className="portal-panel-heading compact"><div><span className="portal-kicker">OPERATIONS</span><h2>System monitoring</h2><p>Sanitized local evidence for failures, retries, and scheduled jobs. Hosted observability remains a release gate.</p></div><button className="portal-outline" type="button" onClick={() => void load()}><RefreshCw size={15} /> Refresh</button></div>{error && <div className="recovery-error"><AlertTriangle size={17} /><span>{error}</span></div>}<label className="portal-field"><span>Alert status</span><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="resolved">Resolved</option></select></label><div className="portal-table-wrap"><table className="portal-table"><thead><tr><th>Severity</th><th>Category</th><th>Provider</th><th>Occurrences</th><th>Last seen</th><th>Action</th></tr></thead><tbody>{data?.alerts.map((alert) => <tr key={alert.id}><td>{alert.severity}</td><td>{alert.category}</td><td>{alert.provider || "system"}</td><td>{alert.occurrenceCount}</td><td>{new Date(alert.lastSeen).toLocaleString()}</td><td>{alert.status === "resolved" ? <CheckCircle2 size={16} /> : <button className="portal-outline" disabled={busy === alert.id} onClick={() => void update(alert, alert.status === "open" ? "acknowledge" : "resolve")} type="button">{alert.status === "open" ? "Acknowledge" : "Resolve"}</button>}</td></tr>)}</tbody></table></div></section>;
+}

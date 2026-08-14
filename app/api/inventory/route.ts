@@ -10,6 +10,7 @@ import { attachPublishedVendorLocation } from "../../../lib/vendor-public-locati
 import { validatePricePolicy } from "../../../lib/pricing-governance";
 import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
 import { getRuntimeEnv } from "../../../lib/runtime-env";
+import { enforceRateLimit } from "../../../lib/abuse-controls";
 
 type InventoryRow = {
   id: number;
@@ -35,6 +36,8 @@ type InventoryRow = {
 
 export async function GET(request: Request) {
   try {
+    const limited = await enforceRateLimit(request, "public_search");
+    if (limited) return limited;
     const url = new URL(request.url);
     const mine = url.searchParams.get("scope") === "mine";
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();

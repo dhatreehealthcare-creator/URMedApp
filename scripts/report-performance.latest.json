@@ -1,0 +1,395 @@
+{
+  "generatedAt": "2026-08-14T03:36:52.345Z",
+  "methodology": {
+    "engine": "SQLite node:sqlite in-memory",
+    "tenantId": 2,
+    "dateRange": [
+      "2026-01-01T00:00:00",
+      "2027-01-01T00:00:00"
+    ],
+    "pages": [
+      {
+        "limit": 100,
+        "offset": 0
+      },
+      {
+        "limit": 100,
+        "offset": 10000
+      }
+    ],
+    "exportCap": 5000,
+    "deliveryCandidateCap": 100001,
+    "disclaimer": "Synthetic local evidence; hosted D1 performance requires an approved anonymized snapshot and provider UAT."
+  },
+  "scales": {
+    "10000": {
+      "datasetRowsPerEntity": 10000,
+      "loadMs": 147.67,
+      "exportCap": 5000,
+      "reports": {
+        "stock": {
+          "name": "stock",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 1.45,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 1.18,
+            "rows": 0
+          },
+          "total": {
+            "rows": 125,
+            "elapsedMs": 0.9
+          },
+          "plan": [
+            "SEARCH i USING INDEX pharmacy_inventory_vendor_idx (vendor_id=? AND active=?)",
+            "SEARCH p USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR GROUP BY",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "sales": {
+          "name": "sales",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 4.45,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 4.19,
+            "rows": 0
+          },
+          "total": {
+            "rows": 365,
+            "elapsedMs": 3.69
+          },
+          "plan": [
+            "SEARCH invoice USING COVERING INDEX tax_invoices_source_date_idx (source_type=?)",
+            "SEARCH o USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH item USING INDEX order_items_order_idx (order_id=?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "expenses": {
+          "name": "expenses",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 1.27,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 1.36,
+            "rows": 0
+          },
+          "total": {
+            "rows": 1092,
+            "elapsedMs": 1.03
+          },
+          "plan": [
+            "SEARCH e USING INDEX expenses_vendor_date_idx (vendor_id=? AND expense_date>? AND expense_date<?)",
+            "USE TEMP B-TREE FOR GROUP BY",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "homeDelivery": {
+          "name": "home_delivery",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 0.24,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 0.51,
+            "rows": 0
+          },
+          "total": {
+            "rows": 1250,
+            "elapsedMs": 0.47
+          },
+          "plan": [
+            "SEARCH o USING INDEX orders_vendor_delivery_date_idx (vendor_id=? AND delivery_method=? AND created_at>? AND created_at<?)",
+            "SEARCH assignment USING COVERING INDEX delivery_assignments_order_idx (order_id=?)"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": false,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          },
+          "candidateBound": {
+            "candidateRows": 1250,
+            "postFilterRows": 625,
+            "cap": 100001,
+            "overflow": false,
+            "privacySafeColumns": true
+          }
+        }
+      }
+    },
+    "100000": {
+      "datasetRowsPerEntity": 100000,
+      "loadMs": 1887.44,
+      "exportCap": 5000,
+      "reports": {
+        "stock": {
+          "name": "stock",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 14.15,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 13.46,
+            "rows": 0
+          },
+          "total": {
+            "rows": 125,
+            "elapsedMs": 10.05
+          },
+          "plan": [
+            "SEARCH i USING INDEX pharmacy_inventory_vendor_idx (vendor_id=? AND active=?)",
+            "SEARCH p USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR GROUP BY",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "sales": {
+          "name": "sales",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 58.74,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 59.17,
+            "rows": 0
+          },
+          "total": {
+            "rows": 365,
+            "elapsedMs": 52.77
+          },
+          "plan": [
+            "SEARCH invoice USING COVERING INDEX tax_invoices_source_date_idx (source_type=?)",
+            "SEARCH o USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH item USING INDEX order_items_order_idx (order_id=?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "expenses": {
+          "name": "expenses",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 11.45,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 10.98,
+            "rows": 0
+          },
+          "total": {
+            "rows": 1092,
+            "elapsedMs": 10.02
+          },
+          "plan": [
+            "SEARCH e USING INDEX expenses_vendor_date_idx (vendor_id=? AND expense_date>? AND expense_date<?)",
+            "USE TEMP B-TREE FOR GROUP BY",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "homeDelivery": {
+          "name": "home_delivery",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 0.34,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 4.85,
+            "rows": 100
+          },
+          "total": {
+            "rows": 12500,
+            "elapsedMs": 5.36
+          },
+          "plan": [
+            "SEARCH o USING INDEX orders_vendor_delivery_date_idx (vendor_id=? AND delivery_method=? AND created_at>? AND created_at<?)",
+            "SEARCH assignment USING COVERING INDEX delivery_assignments_order_idx (order_id=?)"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": false,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": true
+          },
+          "candidateBound": {
+            "candidateRows": 12500,
+            "postFilterRows": 6250,
+            "cap": 100001,
+            "overflow": false,
+            "privacySafeColumns": true
+          }
+        }
+      }
+    },
+    "1000000": {
+      "datasetRowsPerEntity": 1000000,
+      "loadMs": 23170.31,
+      "exportCap": 5000,
+      "reports": {
+        "stock": {
+          "name": "stock",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 189.58,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 188.56,
+            "rows": 0
+          },
+          "total": {
+            "rows": 125,
+            "elapsedMs": 138.48
+          },
+          "plan": [
+            "SEARCH i USING INDEX pharmacy_inventory_vendor_idx (vendor_id=? AND active=?)",
+            "SEARCH p USING INTEGER PRIMARY KEY (rowid=?)",
+            "USE TEMP B-TREE FOR GROUP BY",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "sales": {
+          "name": "sales",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 939.13,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 951.61,
+            "rows": 0
+          },
+          "total": {
+            "rows": 365,
+            "elapsedMs": 798.86
+          },
+          "plan": [
+            "SEARCH invoice USING COVERING INDEX tax_invoices_source_date_idx (source_type=?)",
+            "SEARCH o USING INTEGER PRIMARY KEY (rowid=?)",
+            "SEARCH item USING INDEX order_items_order_idx (order_id=?)",
+            "USE TEMP B-TREE FOR GROUP BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "expenses": {
+          "name": "expenses",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 158.04,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 156.61,
+            "rows": 0
+          },
+          "total": {
+            "rows": 1092,
+            "elapsedMs": 148.04
+          },
+          "plan": [
+            "SEARCH e USING INDEX expenses_vendor_date_idx (vendor_id=? AND expense_date>? AND expense_date<?)",
+            "USE TEMP B-TREE FOR GROUP BY",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": true,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": false
+          }
+        },
+        "homeDelivery": {
+          "name": "home_delivery",
+          "tenantId": 2,
+          "page1": {
+            "elapsedMs": 0.38,
+            "rows": 100
+          },
+          "page100": {
+            "elapsedMs": 8.82,
+            "rows": 100
+          },
+          "total": {
+            "rows": 125000,
+            "elapsedMs": 84.25
+          },
+          "plan": [
+            "SEARCH o USING INDEX orders_vendor_delivery_date_idx (vendor_id=? AND delivery_method=? AND created_at>? AND created_at<?)",
+            "SEARCH assignment USING COVERING INDEX delivery_assignments_order_idx (order_id=?)"
+          ],
+          "risks": {
+            "fullScan": false,
+            "temporaryBTree": false,
+            "dateFunctionOnPredicate": false,
+            "offsetDegradation": true
+          },
+          "candidateBound": {
+            "candidateRows": 125000,
+            "postFilterRows": 62500,
+            "cap": 100001,
+            "overflow": true,
+            "privacySafeColumns": true
+          }
+        }
+      }
+    }
+  }
+}

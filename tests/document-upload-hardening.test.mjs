@@ -166,6 +166,7 @@ test("delivery proof is disabled before bytes or storage and R2 follows an atomi
   assert.match(route, /UPDATE stored_documents SET status='active'/);
   assert.match(route, /DELETE FROM stored_documents WHERE id=\?/);
   assert.match(route, /getR2\(\)\.delete\(objectKey\)/);
-  assert.match(quotaSource, /'content_validated','upload_pending'/);
+  assert.match(quotaSource, /'pending_scan','upload_pending'/);
+  assert.match(quotaSource, /'quarantined'/);
   assert.match(route, /matchesSignature/);
 });

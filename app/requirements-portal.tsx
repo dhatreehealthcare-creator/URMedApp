@@ -44,6 +44,7 @@ import { CustomerOrderHistory } from "./customer-order-history";
 import { AccountingStatements } from "./accounting-statements";
 import { PricingGovernanceCenter } from "./pricing-governance-center";
 import { ReconciliationWorkspace } from "./reconciliation-workspace";
+import { AdminOperationalMonitoring } from "./admin-operational-monitoring";
 import type { CustomerReorderRequest } from "../lib/customer-order-history";
 
 type PortalRole = "vendor" | "customer" | "admin";
@@ -172,7 +173,7 @@ function DatabaseArchitecture() {
 }
 
 function AdminPortal({ section }: { section: AdminSection }) {
-  if (section === "overview") return <div className="portal-stack"><AdminOperationsCenter mode="overview" /><RecoveredDataCard /></div>;
+  if (section === "overview") return <div className="portal-stack"><AdminOperationsCenter mode="overview" /><AdminOperationalMonitoring /><RecoveredDataCard /></div>;
   if (section === "architecture") return <DatabaseArchitecture />;
   if (section === "registrations") return <div className="portal-stack"><AdminRegistrationList /><AdminStoreMap /><VendorCompliance /></div>;
   if (section === "categories") return <ProductMaster role="admin" />;

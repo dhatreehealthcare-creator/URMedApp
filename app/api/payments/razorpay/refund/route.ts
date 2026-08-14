@@ -9,10 +9,14 @@ import {
 } from "../../../../../lib/payment-lifecycle";
 import { createRazorpayRefund, RazorpayProviderError } from "../../../../../lib/razorpay";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
+import { enforceRateLimit } from "../../../../../lib/abuse-controls";
+import { safeRecordOperationalEvent } from "../../../../../lib/operational-monitoring";
 
 export async function POST(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["customer", "vendor", "admin"]);
+    const limited = await enforceRateLimit(request, "payment", { profileId: profile.id });
+    if (limited) return limited;
     const body = await request.json() as Record<string, unknown>;
     const orderId = Number(body.orderId);
     const reason = String(body.reason ?? "").trim();
@@ -85,6 +89,7 @@ export async function POST(request: Request) {
       }, { status: reconciled.status === "pending" ? 202 : 200 });
     } catch (error) {
       if (!(error instanceof RazorpayProviderError)) throw error;
+      await safeRecordOperationalEvent({ db, eventKey: `payment-refund:provider-failure:${refund.id}:${Date.now()}`, category: "payment", severity: "error", provider: "razorpay", vendorId: refund.vendorId, profileId: profile.id, referenceType: "payment_refund", referenceId: refund.id, errorCode: "provider_refund_failed", retryable: true, detail: { providerStatus: error.status } });
       const reconciled = await reconcileProviderRefund({
         db,
         providerPaymentId: refund.providerPaymentId,

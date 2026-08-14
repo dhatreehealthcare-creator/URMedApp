@@ -494,6 +494,7 @@ export const orders = sqliteTable("orders", {
   index("orders_customer_idx").on(table.customerProfileId, table.createdAt),
   index("orders_vendor_idx").on(table.vendorId, table.createdAt),
   index("orders_delivery_date_vendor_idx").on(table.deliveryMethod, table.createdAt, table.vendorId),
+  index("orders_vendor_delivery_date_idx").on(table.vendorId, table.deliveryMethod, table.createdAt, table.id),
   index("orders_status_date_vendor_idx").on(table.orderStatus, table.createdAt, table.vendorId),
   index("orders_razorpay_idx").on(table.razorpayOrderId),
 ]);
@@ -647,13 +648,27 @@ export const storedDocuments = sqliteTable("stored_documents", {
   mimeType: text("mime_type").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   sha256: text("sha256").notNull(),
-  malwareStatus: text("malware_status").notNull().default("pending"),
+  malwareStatus: text("malware_status", { enum: ["pending", "pending_scan", "clean", "quarantined", "scan_failed", "content_validated"] }).notNull().default("pending"),
   retentionUntil: text("retention_until"),
   status: text("status").notNull().default("active"),
   uploadedAt: text("uploaded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("stored_documents_object_uidx").on(table.objectKey),
   index("stored_documents_vendor_idx").on(table.vendorId, table.purpose, table.status),
+]);
+
+export const abuseRateLimitBuckets = sqliteTable("abuse_rate_limit_buckets", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  routeKey: text("route_key").notNull(),
+  subjectHash: text("subject_hash").notNull(),
+  windowStartMs: integer("window_start_ms").notNull(),
+  expiresAtMs: integer("expires_at_ms").notNull(),
+  requestCount: integer("request_count").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("abuse_rate_limit_bucket_uidx").on(table.routeKey, table.subjectHash, table.windowStartMs),
+  index("abuse_rate_limit_expiry_idx").on(table.expiresAtMs),
 ]);
 
 export const pharmacists = sqliteTable("pharmacists", {
@@ -1645,3 +1660,52 @@ export const backupRuns = sqliteTable("backup_runs", {
   checksumSha256: text("checksum_sha256").notNull().default(""),
   notes: text("notes").notNull().default(""),
 }, (table) => [index("backup_runs_started_idx").on(table.startedAt, table.status)]);
+
+export const operationalEvents = sqliteTable("operational_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  eventKey: text("event_key").notNull(),
+  category: text("category").notNull(),
+  severity: text("severity").notNull(),
+  status: text("status").notNull().default("recorded"),
+  provider: text("provider").notNull().default(""),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  profileId: integer("profile_id").references(() => accountProfiles.id),
+  referenceType: text("reference_type").notNull().default(""),
+  referenceId: text("reference_id").notNull().default(""),
+  errorCode: text("error_code").notNull().default(""),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  retryable: integer("retryable", { mode: "boolean" }).notNull().default(false),
+  requestId: text("request_id").notNull().default(""),
+  detailJson: text("detail_json").notNull().default("{}"),
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("operational_events_key_uidx").on(table.eventKey),
+  index("operational_events_category_idx").on(table.category, table.occurredAt),
+  index("operational_events_status_idx").on(table.status, table.occurredAt),
+  index("operational_events_vendor_idx").on(table.vendorId, table.occurredAt),
+  index("operational_events_provider_idx").on(table.provider, table.occurredAt),
+]);
+
+export const operationalAlerts = sqliteTable("operational_alerts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  fingerprint: text("fingerprint").notNull(),
+  category: text("category").notNull(),
+  severity: text("severity").notNull(),
+  status: text("status").notNull().default("open"),
+  provider: text("provider").notNull().default(""),
+  vendorId: integer("vendor_id").references(() => vendors.id),
+  occurrenceCount: integer("occurrence_count").notNull().default(0),
+  firstSeen: text("first_seen").notNull(),
+  lastSeen: text("last_seen").notNull(),
+  sampleEventId: integer("sample_event_id").references(() => operationalEvents.id),
+  lastErrorCode: text("last_error_code").notNull().default(""),
+  version: integer("version").notNull().default(1),
+  resolvedAt: text("resolved_at"),
+  resolutionReason: text("resolution_reason").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("operational_alerts_fingerprint_uidx").on(table.fingerprint),
+  index("operational_alerts_status_idx").on(table.status, table.lastSeen),
+  index("operational_alerts_vendor_idx").on(table.vendorId, table.status, table.lastSeen),
+]);

@@ -8,6 +8,7 @@ import { generateVendorInventoryAlerts } from "../lib/vendor-inventory-alerts.ts
 import { generateVendorOrderSlaNotifications } from "../lib/vendor-order-notifications.ts";
 import { processTransactionalEmailOutbox } from "../lib/transactional-email-outbox.ts";
 import { withSecurityHeaders } from "../lib/security-headers.ts";
+import { recordScheduledJobEvent } from "../lib/operational-monitoring.ts";
 
 interface Env {
   ASSETS: Fetcher;
@@ -77,7 +78,8 @@ const worker = {
       ctx.waitUntil(runReservationRecovery({
         db: env.DB,
         scheduledAt: controller.scheduledTime,
-      }).then((result) => {
+      }).then(async (result) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: true, detail: { batchesProcessed: result.batchesProcessed, ordersReleased: result.ordersReleased } });
         console.info("Scheduled inventory reservation recovery completed", {
           cron: controller.cron,
           runKey: result.runKey,
@@ -87,7 +89,8 @@ const worker = {
           remainingExpiredOrders: result.remainingExpiredOrders,
           duplicate: result.duplicate,
         });
-      }).catch((error) => {
+      }).catch(async (error) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: false, errorCode: "reservation_recovery_failed", detail: { error: error instanceof Error ? error.name : "unknown" } });
         console.error("Scheduled inventory reservation recovery failed", error);
         throw error;
       }));
@@ -98,14 +101,16 @@ const worker = {
         db: env.DB,
         now: controller.scheduledTime,
         requestId: `cloudflare-scheduled:${controller.scheduledTime}`,
-      }).then((result) => {
+      }).then(async (result) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: true, detail: { processed: result.processed } });
         console.info("Scheduled customer reminder processing completed", {
           cron: controller.cron,
           window: result.window,
           processed: result.processed,
           email: result.email,
         });
-      }).catch((error) => {
+      }).catch(async (error) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: false, errorCode: "reminder_processing_failed", detail: { error: error instanceof Error ? error.name : "unknown" } });
         console.error("Scheduled customer reminder processing failed", error);
         throw error;
       }));
@@ -118,13 +123,15 @@ const worker = {
         processingDate,
       }).then(async (result) => {
         const sla = await generateVendorOrderSlaNotifications({ db: env.DB, now: new Date(controller.scheduledTime).toISOString() });
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: true, detail: { generated: result.generated, slaGenerated: sla.generated } });
         console.info("Scheduled vendor inventory alert processing completed", {
           cron: controller.cron,
           processingDate: result.processingDate,
           generated: result.generated,
           slaGenerated: sla.generated,
         });
-      }).catch((error) => {
+      }).catch(async (error) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: false, errorCode: "vendor_alert_processing_failed", detail: { error: error instanceof Error ? error.name : "unknown" } });
         console.error("Scheduled vendor inventory alert processing failed", error);
         throw error;
       }));
@@ -135,7 +142,8 @@ const worker = {
         db: env.DB,
         leaseOwner: `worker:${controller.scheduledTime}`,
         now: controller.scheduledTime,
-      }).then((result) => {
+      }).then(async (result) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: true, detail: { claimed: result.claimed, sent: result.sent, deadLettered: result.deadLettered } });
         console.info("Scheduled transactional email outbox processing completed", {
           cron: controller.cron,
           policyVersion: result.policyVersion,
@@ -146,7 +154,8 @@ const worker = {
           cancelled: result.cancelled,
           remainingDue: result.remainingDue,
         });
-      }).catch((error) => {
+      }).catch(async (error) => {
+        await recordScheduledJobEvent({ db: env.DB, cron: controller.cron, scheduledTime: controller.scheduledTime, ok: false, errorCode: "email_outbox_processing_failed", detail: { error: error instanceof Error ? error.name : "unknown" } });
         console.error("Scheduled transactional email outbox processing failed", error);
         throw error;
       }));

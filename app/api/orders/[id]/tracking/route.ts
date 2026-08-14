@@ -12,6 +12,7 @@ import {
   validateDeliveryLocationProof,
   type DeliveryLocationProof,
 } from "../../../../../lib/delivery-location";
+import { enforceRateLimit } from "../../../../../lib/abuse-controls";
 
 const allowedStatuses = new Set(["confirmed", "packed", "ready_for_pickup", "picked_up", "out_for_delivery", "delivered", "cancelled"]);
 
@@ -60,6 +61,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const authenticated = await requireLocalProfile(request, ["customer", "vendor", "admin", "delivery"]);
     const { profile } = authenticated;
+    const limited = profile.role === "delivery"
+      ? await enforceRateLimit(request, "gps", { profileId: profile.id })
+      : null;
+    if (limited) return limited;
     const vendorAccess = profile.role === "vendor"
       ? await requireVendorPermission(request, "sale.write", authenticated)
       : null;

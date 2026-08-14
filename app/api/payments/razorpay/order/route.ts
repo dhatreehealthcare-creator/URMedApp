@@ -2,10 +2,14 @@ import { getD1 } from "../../../../../db/d1";
 import { errorResponse, requireLocalProfile } from "../../../../../lib/auth-server";
 import { ensureOnlineReservationPayable, InventoryReservationError } from "../../../../../lib/inventory-reservations";
 import { getRequiredRuntimeValue } from "../../../../../lib/runtime-env";
+import { enforceRateLimit } from "../../../../../lib/abuse-controls";
+import { safeRecordOperationalEvent } from "../../../../../lib/operational-monitoring";
 
 export async function POST(request: Request) {
   try {
     const { profile } = await requireLocalProfile(request, ["customer"]);
+    const limited = await enforceRateLimit(request, "payment", { profileId: profile.id });
+    if (limited) return limited;
     const body = await request.json() as { orderId?: unknown };
     const orderId = Number(body.orderId);
     if (!Number.isInteger(orderId)) return Response.json({ error: "Order is invalid" }, { status: 400 });
@@ -37,7 +41,10 @@ export async function POST(request: Request) {
       body: JSON.stringify({ amount: order.totalPaise, currency: "INR", receipt: order.orderNumber, notes: { urmed_order_id: String(order.id) } }),
     });
     const payload = await response.json() as { id?: string; amount?: number; currency?: string; receipt?: string; error?: { description?: string } };
-    if (!response.ok || !payload.id) return Response.json({ error: payload.error?.description || "Razorpay could not create the payment" }, { status: 502 });
+    if (!response.ok || !payload.id) {
+      await safeRecordOperationalEvent({ db, eventKey: `payment-order:provider-failure:${order.id}:${Date.now()}`, category: "payment", severity: "error", provider: "razorpay", profileId: profile.id, referenceType: "order", referenceId: order.id, errorCode: "provider_order_failed", retryable: true, detail: { providerStatus: response.status } });
+      return Response.json({ error: payload.error?.description || "Razorpay could not create the payment" }, { status: 502 });
+    }
     if (payload.amount !== order.totalPaise || payload.currency !== "INR" || payload.receipt !== order.orderNumber) {
       return Response.json({ error: "Razorpay returned an inconsistent payment order" }, { status: 502 });
     }

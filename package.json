@@ -16,6 +16,9 @@
     "test:integration": "npm run build && npm run test:integration:built",
     "test:integration:built": "bash scripts/test-integration.sh",
     "benchmark:reports": "node scripts/benchmark-report-plans.mjs",
+    "backup:local": "node scripts/backup-local.mjs",
+    "restore:verify": "node scripts/restore-verify.mjs",
+    "release:gates:local": "node scripts/release-gates-local.mjs",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
