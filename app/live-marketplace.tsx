@@ -117,6 +117,36 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
       const payload = await inventoryResponse.json() as { inventory: Inventory[] };
       setInventory(payload.inventory);
       setSelectedInventoryId((current) => payload.inventory.some((item) => item.id === current) ? current : (payload.inventory[0]?.id ?? 0));
+      if (role === "customer" && typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get("add") === "1") {
+          const requestedInventoryId = Number(url.searchParams.get("inventoryId"));
+          const selected = payload.inventory.find((item) => item.id === requestedInventoryId);
+          if (selected) {
+            setSelectedInventoryId(selected.id);
+            setCheckoutVendorId(selected.vendorId);
+            setCart((current) => addCustomerCartLine(current, {
+              inventoryId: selected.id,
+              vendorId: selected.vendorId,
+              productId: selected.productId,
+              businessName: selected.businessName,
+              productName: selected.productName,
+              salePricePaise: selected.salePricePaise,
+              gstPercent: selected.gstPercent,
+              availableQuantity: selected.quantity,
+              prescriptionRequired: Boolean(selected.prescriptionRequired),
+              homeDelivery: Boolean(selected.homeDelivery),
+              publicLocation: selected.publicLocation,
+            }, 1));
+            setMessage(`${selected.productName} was added to your live pharmacy cart.`);
+          } else {
+            setError("That medicine is no longer available. Search the current pharmacy stock instead.");
+          }
+          url.searchParams.delete("inventoryId");
+          url.searchParams.delete("add");
+          window.history.replaceState({}, "", url);
+        }
+      }
       if (token) {
         const orderResponse = await authenticatedFetch("/api/orders", { cache: "no-store" });
         if (orderResponse.ok) setOrders(((await orderResponse.json()) as { orders: Order[] }).orders);
@@ -317,6 +347,11 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
           <label className="portal-field"><span>Quantity to add *</span><input max={Math.min(100, selectedInventory?.quantity ?? 100)} min="1" onChange={(event) => setQuantity(Number(event.target.value))} required type="number" value={quantity} /></label>
           <button className="portal-secondary wide" disabled={!selectedInventoryId} onClick={addSelectedToCart} type="button"><Plus size={15} /> Add to pharmacy cart</button>
         </div>
+        {selectedInventory && <section className="portal-note medicine-detail-card" aria-labelledby="medicine-detail-title">
+          <div><span className="portal-kicker">LIVE MEDICINE DETAILS</span><h3 id="medicine-detail-title">{selectedInventory.productName}</h3><p>{selectedInventory.manufacturer || "Manufacturer information is not available"} · {selectedInventory.businessName}</p></div>
+          <div className="portal-split compact-fields"><span><small>Current price</small><strong>₹{(selectedInventory.salePricePaise / 100).toFixed(2)}</strong></span><span><small>Available stock</small><strong>{selectedInventory.quantity} units</strong></span><span><small>Prescription</small><strong>{selectedInventory.prescriptionRequired ? "Required" : "Not required"}</strong></span><span><small>Expiry status</small><strong>{selectedInventory.expiryStatus.replaceAll("_", " ")}</strong></span></div>
+          <small>Prices, tax, stock and FEFO batch allocation are revalidated by the pharmacy API before checkout.</small>
+        </section>}
         <div className={cartStyles.groups}>{cartGroups.length ? cartGroups.map((group) => <article className={`${cartStyles.group} ${checkoutGroup?.vendorId === group.vendorId ? cartStyles.selected : ""}`} key={group.vendorId}><header><span><strong>{group.businessName}</strong><small>{group.lines.length} medicine lines · {group.unitCount} units</small></span><button onClick={() => setCheckoutVendorId(group.vendorId)} type="button">{checkoutGroup?.vendorId === group.vendorId ? "Checking out" : "Checkout this pharmacy"}</button></header><div>{group.lines.map((line) => <div className={cartStyles.line} key={line.inventoryId}><span><strong>{line.productName}{line.prescriptionRequired ? " · Rx" : ""}</strong><small>Current preview ₹{(line.salePricePaise / 100).toFixed(2)} + {line.gstPercent}% GST</small></span><div className={cartStyles.quantity}><button aria-label={`Reduce ${line.productName}`} onClick={() => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, line.quantity - 1))} type="button"><Minus size={13} /></button><input aria-label={`${line.productName} quantity`} max={Math.min(100, line.availableQuantity)} min="1" onChange={(event) => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, Number(event.target.value)))} type="number" value={line.quantity} /><button aria-label={`Increase ${line.productName}`} onClick={() => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, line.quantity + 1))} type="button"><Plus size={13} /></button><button aria-label={`Remove ${line.productName}`} className={cartStyles.remove} onClick={() => setCart((current) => current.filter((item) => item.inventoryId !== line.inventoryId))} type="button"><Trash2 size={14} /></button></div></div>)}</div><footer><span>Estimated medicines + GST</span><strong>₹{((group.estimatedSubtotalPaise + group.estimatedTaxPaise) / 100).toFixed(2)}</strong></footer></article>) : <div className={cartStyles.empty}><ShoppingCart size={21} /><span><strong>Your cart is empty</strong><small>Add live inventory above. No demo products are placed in the cart.</small></span></div>}</div>
         {checkoutGroup?.requiresPrescription && <PrescriptionCenter onSelect={(id) => setPrescriptionByVendor((current) => ({ ...current, [checkoutGroup.vendorId]: id }))} role="customer" selectedId={prescriptionByVendor[checkoutGroup.vendorId] ?? 0} vendorId={checkoutGroup.vendorId} />}
         <CustomerAddressBook onIdentity={applyCheckoutIdentity} onSelect={selectCheckoutAddress} />

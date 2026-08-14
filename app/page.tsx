@@ -110,11 +110,11 @@ export default function Home() {
             <span>ur<span>med</span></span>
           </a>
 
-          <button className="location-control" type="button">
+          <Link className="location-control" href="/customer" aria-label="Choose delivery location">
             <MapPin size={18} />
             <span><small>Delivery location</small>Choose your saved address at checkout</span>
             <ChevronDown size={16} />
-          </button>
+          </Link>
 
           <nav className="main-nav" aria-label="Primary navigation">
             <a href="#medicines">Medicines</a>
@@ -150,9 +150,7 @@ export default function Home() {
 
             <div className="quick-links">
               <span>Popular:</span>
-              <a href="#medicines">Paracetamol</a>
-              <a href="#medicines">Diabetes care</a>
-              <a href="#medicines">BP monitors</a>
+              {["Paracetamol", "Diabetes care", "BP monitors"].map((term) => <a href="#medicines" key={term} onClick={(event) => { event.preventDefault(); setQuery(term); document.querySelector("#medicines")?.scrollIntoView({ behavior: "smooth" }); }}>{term}</a>)}
             </div>
 
             <div className="trust-row">
@@ -231,7 +229,7 @@ export default function Home() {
                 <div className="availability"><span /> Available at {product.pharmacy}</div>
                 <div className="product-footer">
                   <div><strong className={product.migrated ? "catalogue-price" : ""}>{product.price}</strong>{product.mrp && <del>{product.mrp}</del>}</div>
-                  <button disabled={!product.inventoryId} onClick={() => product.inventoryId && window.location.assign("/customer")} type="button">{product.inventoryId ? "Add in live cart" : "Stock unavailable"}</button>
+                  <button disabled={!product.inventoryId} onClick={() => product.inventoryId && window.location.assign(`/customer?section=orders&inventoryId=${product.inventoryId}&add=1`)} type="button">{product.inventoryId ? "Add in live cart" : "Stock unavailable"}</button>
                 </div>
               </div>
             </article>

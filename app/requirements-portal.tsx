@@ -184,7 +184,10 @@ function AdminPortal({ section }: { section: AdminSection }) {
 export function RequirementsPortal({ initialRole, onBack }: { initialRole: PortalRole; onBack: () => void }) {
   const role = initialRole;
   const [vendorSection, setVendorSection] = useState<VendorSection>(initialRole === "vendor" ? "overview" : "overview");
-  const [customerSection, setCustomerSection] = useState<CustomerSection>("account");
+  const [customerSection, setCustomerSection] = useState<CustomerSection>(() => {
+    if (typeof window === "undefined") return "account";
+    return new URLSearchParams(window.location.search).get("section") === "orders" ? "orders" : "account";
+  });
   const [customerReorder, setCustomerReorder] = useState<CustomerReorderRequest | null>(null);
   const [adminSection, setAdminSection] = useState<AdminSection>("overview");
   const section = role === "vendor" ? vendorSection : role === "customer" ? customerSection : adminSection;

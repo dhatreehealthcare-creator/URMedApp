@@ -71,6 +71,18 @@ test("production storefront no longer contains demo cart, products, pharmacies o
   assert.match(page, /href="\/customer"/);
 });
 
+test("storefront search actions preserve the live inventory handoff", () => {
+  const page = read("../app/page.tsx");
+  const marketplace = read("../app/live-marketplace.tsx");
+  assert.match(page, /Choose delivery location/);
+  assert.match(page, /setQuery\(term\)/);
+  assert.match(page, /\/customer\?section=orders&inventoryId=\$\{product\.inventoryId\}&add=1/);
+  assert.match(marketplace, /url\.searchParams\.get\("add"\) === "1"/);
+  assert.match(marketplace, /was added to your live pharmacy cart/);
+  assert.match(marketplace, /LIVE MEDICINE DETAILS/);
+  assert.match(read("../app/requirements-portal.tsx"), /URLSearchParams\(window\.location\.search\).*section.*orders/s);
+});
+
 test("packaged Worker covers multi-line checkout and Rx reuse controls", () => {
   const integration = read("./integration/phase0-api.integration.test.mjs");
   assert.match(integration, /multi-line pharmacy order/);
