@@ -3,6 +3,7 @@ import { errorResponse } from "../../../../../lib/auth-server";
 import { releaseExpiredReservations } from "../../../../../lib/inventory-reservations";
 import { posProductRequiresPrescription } from "../../../../../lib/offline-pos";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
+import { effectivePriceFallbackSql } from "../../../../../lib/effective-pricing";
 
 type CatalogRow = {
   productId: number;
@@ -53,10 +54,10 @@ export async function GET(request: Request) {
           p.dispensing_uom AS dispensingUom, p.prescription_required AS prescriptionRequired,
           p.drug_schedule AS drugSchedule, p.hsn_code AS hsnCode,
           SUM(i.quantity - i.reserved_quantity) AS availableQuantity,
-          MIN(i.sale_price_paise) AS minimumPricePaise,
-          MAX(i.sale_price_paise) AS maximumPricePaise,
+          MIN(${effectivePriceFallbackSql("i", "sale_price_paise")}) AS minimumPricePaise,
+          MAX(${effectivePriceFallbackSql("i", "sale_price_paise")}) AS maximumPricePaise,
           MIN(i.expiry_date) AS nextExpiryDate, COUNT(*) AS batchCount,
-          group_concat(DISTINCT i.gst_percent) AS gstRates
+          group_concat(DISTINCT ${effectivePriceFallbackSql("i", "gst_percent")}) AS gstRates
         FROM products p JOIN pharmacy_inventory i ON i.product_id = p.id
         WHERE i.vendor_id = ? AND p.active = 1 AND p.governance_status = 'approved'
           AND i.active = 1 AND i.quarantine_status = 'available'
@@ -64,7 +65,8 @@ export async function GET(request: Request) {
           AND i.expiry_date IS NOT NULL AND date(i.expiry_date) >= date('now')
           AND (i.quantity - i.reserved_quantity) > 0
           AND (? = '' OR lower(p.name) LIKE ? OR lower(p.generic_name) LIKE ?
-            OR lower(p.trade_name) LIKE ? OR lower(p.manufacturer) LIKE ?)
+            OR lower(p.trade_name) LIKE ? OR lower(p.manufacturer) LIKE ?
+            OR EXISTS (SELECT 1 FROM product_barcodes barcode WHERE barcode.product_id=p.id AND barcode.status='approved' AND barcode.code LIKE ?))
         GROUP BY p.id, p.name, p.generic_name, p.trade_name, p.manufacturer,
           p.strength_value, p.strength_unit, p.pack_type, p.pack_size_value,
           p.pack_size_unit, p.dispensing_uom, p.prescription_required,
@@ -74,7 +76,7 @@ export async function GET(request: Request) {
       )
       SELECT * FROM counted
       ORDER BY lower(productName), productId LIMIT ? OFFSET ?
-    `).bind(vendorId, query, search, search, search, search, pageSize, offset).all<CatalogRow>();
+    `).bind(vendorId, query, search, search, search, search, search, pageSize, offset).all<CatalogRow>();
     const total = Number(result.results[0]?.totalCount ?? 0);
     return Response.json({
       products: result.results.map((resultRow) => {

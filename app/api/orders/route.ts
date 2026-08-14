@@ -11,6 +11,7 @@ import { normalizeIndianMobile } from "../../../lib/identity-verification";
 import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
 import { requireVendorPermission } from "../../../lib/vendor-access";
 import { prepareVendorNewOrderNotificationStatement } from "../../../lib/vendor-order-notifications";
+import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
 
 const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
@@ -194,8 +195,9 @@ export async function POST(request: Request) {
     for (const [productId, productRequest] of productRequests) {
       const batches = await db.prepare(`
         SELECT i.id AS inventoryId, i.product_id AS productId, p.name AS productName,
-          i.batch_number AS batchNumber, i.expiry_date AS expiryDate, i.sale_price_paise AS salePricePaise,
-          i.gst_percent AS gstPercent, p.hsn_code AS hsnCode,
+          i.batch_number AS batchNumber, i.expiry_date AS expiryDate,
+          ${effectivePriceFallbackSql("i", "sale_price_paise")} AS salePricePaise,
+          ${effectivePriceFallbackSql("i", "gst_percent")} AS gstPercent, p.hsn_code AS hsnCode,
           (i.quantity - i.reserved_quantity) AS availableQuantity
         FROM pharmacy_inventory i JOIN products p ON p.id = i.product_id
         WHERE i.vendor_id = ? AND i.product_id = ? AND i.active = 1 AND p.active = 1

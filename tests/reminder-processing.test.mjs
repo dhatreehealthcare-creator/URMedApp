@@ -58,6 +58,13 @@ function fixture(t) {
       provider_message_id TEXT NOT NULL DEFAULT '',last_error_code TEXT NOT NULL DEFAULT '',last_error_reason TEXT NOT NULL DEFAULT '',
       sent_at TEXT,dead_lettered_at TEXT,cancelled_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE reminder_delivery_evidence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, reminder_type TEXT NOT NULL, reminder_id INTEGER NOT NULL,
+      profile_id INTEGER NOT NULL, local_date TEXT NOT NULL, channel TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE,
+      outbox_id INTEGER, status TEXT NOT NULL DEFAULT 'queued', provider_message_id TEXT NOT NULL DEFAULT '',
+      attempt_count INTEGER NOT NULL DEFAULT 0, last_error_code TEXT NOT NULL DEFAULT '', last_error_reason TEXT NOT NULL DEFAULT '',
+      sent_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     CREATE TABLE refill_reminders (
       id INTEGER PRIMARY KEY,customer_profile_id INTEGER NOT NULL,vendor_id INTEGER NOT NULL,
       medicine_name TEXT NOT NULL,due_date TEXT NOT NULL,reminder_lead_days INTEGER NOT NULL,
@@ -125,21 +132,16 @@ test("scheduled reminders enforce latest consent, active accounts, due time, and
   const { sqlite, db } = fixture(t);
   const due = await getDueReminderCounts({ db, now: scheduledAt });
   assert.deepEqual(due.status, { dueRefills: 1, duePills: 2 });
-  const emailCalls = [];
   const input = {
     db,
     now: scheduledAt,
     requestId: "scheduled-reminders-test",
-    sendEmail: async (to, subject, html) => {
-      emailCalls.push({ to, subject, html });
-      return { sent: true };
-    },
   };
   const first = await processDueReminders(input);
   assert.deepEqual(first.processed, { refills: 1, pills: 2, total: 3 });
   assert.deepEqual(first.email, { queued: 3, sent: 0, unavailableOrFailed: 0, notEnabled: 0 });
-  assert.equal(emailCalls.length, 0, "reminder processing must not call the provider inline");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transactional_email_outbox").get().count, 3);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM reminder_delivery_evidence WHERE channel='email' AND status='queued'").get().count, 3);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM notifications").get().count, 2,
     "email-only reminder delivery must not create an in-app event after opt-out");
   assert.equal(sqlite.prepare("SELECT last_notified_at AS value FROM refill_reminders WHERE id=10").get().value, "2026-08-13T10:05:00");
@@ -149,9 +151,10 @@ test("scheduled reminders enforce latest consent, active accounts, due time, and
 
   const repeated = await processDueReminders(input);
   assert.deepEqual(repeated.processed, { refills: 0, pills: 0, total: 0 });
-  assert.equal(emailCalls.length, 0);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM notifications").get().count, 2);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM transactional_email_outbox").get().count, 3);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM reminder_delivery_evidence").get().count, 5,
+    "durable evidence includes both in-app and email channels");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM audit_events").get().count, 1,
     "a no-op scheduler retry must not amplify audit storage");
 });

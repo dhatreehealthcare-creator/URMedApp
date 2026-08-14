@@ -6,6 +6,8 @@ import { calculatePurchaseLineAmounts, hasConflictingPurchaseBatch, isDuplicateS
 import { LEGACY_RECEIVED_PURCHASE_STATUS, PURCHASE_STATUS } from "../../../lib/purchase-status";
 import { PurchaseTransitionError, receivePurchaseOrder, transitionPurchaseOrder } from "../../../lib/purchase-lifecycle";
 import { requireVendorPermission } from "../../../lib/vendor-access";
+import { getRuntimeEnv } from "../../../lib/runtime-env";
+import { validatePricePolicy } from "../../../lib/pricing-governance";
 
 const gstRates = new Set([0, 5, 12, 18, 28]);
 
@@ -131,6 +133,9 @@ export async function POST(request: Request) {
       if (salePricePaise > mrpPaise) return Response.json({ error: `${rowLabel}: sale price cannot exceed MRP` }, { status: 400 });
       const gstPercent = Number(row.gstPercent);
       if (!gstRates.has(gstPercent)) return Response.json({ error: `${rowLabel}: GST must be 0, 5, 12, 18 or 28 percent` }, { status: 400 });
+      const ceiling = await db.prepare("SELECT ceiling_price_paise AS ceilingPaise FROM product_ceiling_prices WHERE product_id=? AND date(effective_from)<=date(?) AND (effective_until IS NULL OR date(effective_until)>date(?)) ORDER BY date(effective_from) DESC,id DESC LIMIT 1").bind(product.id, invoiceDate, invoiceDate).first<{ ceilingPaise:number }>();
+      try { validatePricePolicy({ purchasePricePaise, salePricePaise, mrpPaise, gstPercent }, ceiling?.ceilingPaise ?? null, getRuntimeEnv().NPPA_CEILING_MODE === "enforce"); }
+      catch (error) { return Response.json({ error: `${rowLabel}: ${error instanceof Error ? error.message : "Pricing policy rejected"}` }, { status: 409 }); }
       const amounts = calculatePurchaseLineAmounts(purchasePricePaise, quantity, gstPercent);
       items.push({ legacyId, productId: product.id, productName: product.name, batchNumber, expiryDate, manufacturingDate, dosage: clean(row.dosage, 80), quantity, freeQuantity, purchasePricePaise, salePricePaise, mrpPaise, gstPercent, ...amounts });
     }

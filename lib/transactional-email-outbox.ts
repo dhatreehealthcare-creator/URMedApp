@@ -224,7 +224,7 @@ async function transitionClaimed(db: D1Database, row: OutboxRow, leaseOwner: str
   errorReason?: string;
   nextAttemptAt?: string;
 }) {
-  const result = await db.prepare(`UPDATE transactional_email_outbox SET status=?,lease_owner='',lease_expires_at=NULL,
+  const update = db.prepare(`UPDATE transactional_email_outbox SET status=?,lease_owner='',lease_expires_at=NULL,
     provider_message_id=?,last_error_code=?,last_error_reason=?,next_attempt_at=?,
     sent_at=CASE WHEN ?='sent' THEN ? ELSE NULL END,
     dead_lettered_at=CASE WHEN ?='dead_letter' THEN ? ELSE NULL END,
@@ -232,8 +232,12 @@ async function transitionClaimed(db: D1Database, row: OutboxRow, leaseOwner: str
     WHERE id=? AND status='processing' AND lease_owner=? AND attempt_count=?`)
     .bind(input.status, input.providerMessageId ?? "", input.errorCode ?? "", input.errorReason ?? "",
       input.nextAttemptAt ?? input.now, input.status, input.now, input.status, input.now,
-      input.status, input.now, input.now, row.id, leaseOwner, row.attemptCount).run();
-  return Number(result.meta.changes ?? 0) === 1;
+      input.status, input.now, input.now, row.id, leaseOwner, row.attemptCount);
+  const evidence = db.prepare(`UPDATE reminder_delivery_evidence SET status=?,provider_message_id=?,attempt_count=?,last_error_code=?,last_error_reason=?,sent_at=CASE WHEN ?='sent' THEN ? ELSE NULL END,updated_at=?
+    WHERE outbox_id=? OR dedupe_key=?`).bind(input.status, input.providerMessageId ?? "", row.attemptCount,
+    input.errorCode ?? "", input.errorReason ?? "", input.status, input.now, input.now, row.id, row.dedupeKey);
+  const results = await db.batch([update, evidence]);
+  return Number(results[0]?.meta.changes ?? 0) === 1;
 }
 
 export async function processTransactionalEmailOutbox(input: {
@@ -254,9 +258,13 @@ export async function processTransactionalEmailOutbox(input: {
   const leaseExpiresAt = new Date(nowDate.getTime() + leaseMilliseconds).toISOString();
   const sender = input.sender ?? sendTransactionalEmail;
   const random = input.random ?? Math.random;
-  const recovered = await db.prepare(`UPDATE transactional_email_outbox SET status='retry_wait',lease_owner='',lease_expires_at=NULL,
+  const recoverStatement = db.prepare(`UPDATE transactional_email_outbox SET status='retry_wait',lease_owner='',lease_expires_at=NULL,
     last_error_code='lease_expired',last_error_reason='Previous delivery lease expired before completion',next_attempt_at=?,updated_at=?
-    WHERE status='processing' AND lease_expires_at<=?`).bind(now, now, now).run();
+    WHERE status='processing' AND lease_expires_at<=?`).bind(now, now, now);
+  const recoverEvidence = db.prepare(`UPDATE reminder_delivery_evidence SET status='retry_wait',last_error_code='lease_expired',last_error_reason='Previous delivery lease expired before completion',updated_at=?
+    WHERE outbox_id IN (SELECT id FROM transactional_email_outbox WHERE last_error_code='lease_expired' AND updated_at=?)`).bind(now, now);
+  const recoveredResults = await db.batch([recoverStatement, recoverEvidence]);
+  const recovered = recoveredResults[0];
   const candidates = await db.prepare(`SELECT id FROM transactional_email_outbox
     WHERE status IN ('queued','retry_wait') AND next_attempt_at<=?
     ORDER BY next_attempt_at,id LIMIT ?`).bind(now, limit).all<{ id: number }>();
@@ -272,11 +280,14 @@ export async function processTransactionalEmailOutbox(input: {
     remainingDue: 0,
   };
   for (const candidate of candidates.results) {
-    const claimed = await db.prepare(`UPDATE transactional_email_outbox SET status='processing',
+    const claimStatement = db.prepare(`UPDATE transactional_email_outbox SET status='processing',
       attempt_count=attempt_count+1,lease_owner=?,lease_expires_at=?,last_error_code='',last_error_reason='',updated_at=?
       WHERE id=? AND status IN ('queued','retry_wait') AND next_attempt_at<=? AND attempt_count<max_attempts`)
-      .bind(leaseOwner, leaseExpiresAt, now, candidate.id, now).run();
-    if (Number(claimed.meta.changes ?? 0) !== 1) continue;
+      .bind(leaseOwner, leaseExpiresAt, now, candidate.id, now);
+    const claimEvidence = db.prepare(`UPDATE reminder_delivery_evidence SET status='processing',attempt_count=attempt_count+1,updated_at=?
+      WHERE outbox_id=? AND status IN ('queued','retry_wait')`).bind(now, candidate.id);
+    const claimResults = await db.batch([claimStatement, claimEvidence]);
+    if (Number(claimResults[0]?.meta.changes ?? 0) !== 1) continue;
     summary.claimed++;
     const row = await db.prepare(`SELECT id,profile_id AS profileId,recipient_email AS recipientEmail,
       category,event_type AS eventType,payload_json AS payloadJson,dedupe_key AS dedupeKey,status,

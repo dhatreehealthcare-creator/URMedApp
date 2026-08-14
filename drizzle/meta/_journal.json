@@ -400,6 +400,27 @@
       "when": 1786592000000,
       "tag": "0056_reconciliation_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1786593000000,
+      "tag": "0057_report_query_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1786594000000,
+      "tag": "0058_effective_pricing_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1786595000000,
+      "tag": "0059_reminder_delivery_evidence",
+      "breakpoints": true
     }
   ]
 }

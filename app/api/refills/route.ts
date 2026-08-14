@@ -3,6 +3,7 @@ import { appendAuditEvent } from "../../../lib/audit";
 import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
 import { effectiveRefillStatus, validateRefillDate } from "../../../lib/refill-engine";
 import { releaseExpiredReservations } from "../../../lib/inventory-reservations";
+import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
 
 type RefillRow = {
   id: number; medicineName: string; originalQuantity: number; daysSupply: number; dueDate: string;
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
         r.status, r.snoozed_until AS snoozedUntil, r.schedule_source AS scheduleSource,
         source.order_number AS sourceOrderNumber, r.vendor_id AS vendorId, v.business_name AS businessName,
         r.product_id AS productId, p.prescription_required AS prescriptionRequired,
-        current.id AS currentInventoryId, current.sale_price_paise AS currentPricePaise,
+        current.id AS currentInventoryId, ${effectivePriceFallbackSql("current", "sale_price_paise")} AS currentPricePaise,
         (current.quantity - current.reserved_quantity) AS availableQuantity,
         current.expiry_date AS currentExpiryDate, r.repeat_order_id AS repeatOrderId
       FROM refill_reminders r

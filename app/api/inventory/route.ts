@@ -8,6 +8,8 @@ import { currentOperationalVendorPredicate } from "../../../lib/operational-vend
 import { requireVendorPermission } from "../../../lib/vendor-access";
 import { attachPublishedVendorLocation } from "../../../lib/vendor-public-location";
 import { validatePricePolicy } from "../../../lib/pricing-governance";
+import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
+import { getRuntimeEnv } from "../../../lib/runtime-env";
 
 type InventoryRow = {
   id: number;
@@ -58,14 +60,15 @@ export async function GET(request: Request) {
       const { vendorId } = await requireVendorPermission(request,"inventory.read");
       where = "i.vendor_id = ?";
       bindings.push(vendorId);
-      purchaseColumn = ", i.purchase_price_paise AS purchasePricePaise";
+      purchaseColumn = `, ${effectivePriceFallbackSql("i", "purchase_price_paise")} AS purchasePricePaise`;
       quantityColumn = "i.quantity";
     }
     if (query) {
       where += ` AND (p.normalized_name LIKE ? OR (manufacturer_state.manufacturer_id IS NOT NULL AND (
         canonical_manufacturer.normalized_name LIKE ? OR EXISTS (SELECT 1 FROM manufacturer_aliases alias
-          WHERE alias.manufacturer_id = canonical_manufacturer.id AND alias.normalized_alias LIKE ?))))`;
-      bindings.push(`%${query}%`, `%${query}%`, `%${query}%`);
+          WHERE alias.manufacturer_id = canonical_manufacturer.id AND alias.normalized_alias LIKE ?))
+        ) OR EXISTS (SELECT 1 FROM product_barcodes barcode WHERE barcode.product_id=p.id AND barcode.status='approved' AND barcode.code LIKE ?))`;
+      bindings.push(`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`);
     }
     bindings.push(mine ? 200 : 60);
     const result = await db.prepare(`
@@ -81,7 +84,7 @@ export async function GET(request: Request) {
         public_location.service_enabled AS publicServiceEnabled,
         public_location.service_radius_km AS publicServiceRadiusKm,
         i.batch_number AS batchNumber, i.expiry_date AS expiryDate,
-        i.sale_price_paise AS salePricePaise, ${quantityColumn} AS quantity,
+        ${effectivePriceFallbackSql("i", "sale_price_paise")} AS salePricePaise, ${quantityColumn} AS quantity,
         i.reserved_quantity AS reservedQuantity, i.gst_percent AS gstPercent,
         i.reorder_level AS reorderLevel, i.quarantine_status AS quarantineStatus,
         CASE WHEN i.expiry_date IS NULL THEN 'missing_expiry'
@@ -124,7 +127,8 @@ export async function POST(request: Request) {
     const quantity = Number(body.quantity);
     if (!Number.isInteger(quantity) || quantity < 0 || quantity > 1000000) return Response.json({ error: "Quantity is invalid" }, { status: 400 });
     const gstPercent = Number(body.gstPercent ?? 0);
-    try { validatePricePolicy({ purchasePricePaise, salePricePaise, mrpPaise, gstPercent }); }
+    const ceiling = await getD1().prepare("SELECT ceiling_price_paise AS ceilingPaise FROM product_ceiling_prices WHERE product_id=(SELECT id FROM products WHERE legacy_id=?) AND date(effective_from)<=date('now') AND (effective_until IS NULL OR date(effective_until)>date('now')) ORDER BY date(effective_from) DESC,id DESC LIMIT 1").bind(legacyId).first<{ ceilingPaise:number }>();
+    try { validatePricePolicy({ purchasePricePaise, salePricePaise, mrpPaise, gstPercent }, ceiling?.ceilingPaise ?? null, getRuntimeEnv().NPPA_CEILING_MODE === "enforce"); }
     catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Pricing is invalid" }, { status: 400 }); }
     const expiryDate = String(body.expiryDate ?? "").trim();
     const today = new Date().toISOString().slice(0, 10);

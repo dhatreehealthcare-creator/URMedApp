@@ -9,6 +9,7 @@ test("D-13 pricing policy treats sale price as GST-exclusive and MRP as tax-incl
   });
   assert.throws(() => source.validatePricePolicy({ purchasePricePaise: 100, salePricePaise: 151, mrpPaise: 150, gstPercent: 5 }), /MRP/);
   assert.throws(() => source.validatePricePolicy({ purchasePricePaise: 100, salePricePaise: 120, mrpPaise: 150, gstPercent: 7 }), /GST/);
+  assert.throws(() => source.validatePricePolicy({ purchasePricePaise: 100, salePricePaise: 120, mrpPaise: 150, gstPercent: 5 }, null, true), /effective ceiling/);
 });
 
 test("presentation conversions are explicit integer base-unit conversions", () => {
@@ -53,4 +54,20 @@ test("pricing management surfaces vendor history and admin GTIN review", async (
   assert.match(component, /Price history/);
   assert.match(component, /barcode_approve/);
   assert.match(adminRoute, /export async function GET/);
+});
+
+test("inventory writes retain immutable effective-price evidence", async () => {
+  const fs = await import("node:fs/promises");
+  const migration = await fs.readFile("drizzle/0057_report_query_indexes.sql", "utf8");
+  assert.match(migration, /pharmacy_inventory_price_history_insert/);
+  assert.match(migration, /pharmacy_inventory_price_history_update/);
+  assert.match(migration, /Automatic inventory price snapshot/);
+});
+
+test("effective pricing migration guards overlapping versions and conversion periods", async () => {
+  const fs = await import("node:fs/promises");
+  const migration = await fs.readFile("drizzle/0058_effective_pricing_authority.sql", "utf8");
+  assert.match(migration, /inventory_price_history_no_overlap_insert/);
+  assert.match(migration, /product_pack_conversions_no_overlap_insert/);
+  assert.match(migration, /DROP INDEX IF EXISTS `product_pack_conversions_product_uom_uidx`/);
 });

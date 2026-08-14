@@ -350,7 +350,7 @@ export const productPackConversions = sqliteTable("product_pack_conversions", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
-  uniqueIndex("product_pack_conversions_product_uom_uidx").on(table.productId, table.presentationUom),
+  index("product_pack_conversions_product_uom_effective_idx").on(table.productId, table.presentationUom, table.effectiveFrom),
   index("product_pack_conversions_governance_idx").on(table.productId, table.governanceStatus, table.effectiveFrom),
 ]);
 
@@ -493,6 +493,8 @@ export const orders = sqliteTable("orders", {
   uniqueIndex("orders_order_number_uidx").on(table.orderNumber),
   index("orders_customer_idx").on(table.customerProfileId, table.createdAt),
   index("orders_vendor_idx").on(table.vendorId, table.createdAt),
+  index("orders_delivery_date_vendor_idx").on(table.deliveryMethod, table.createdAt, table.vendorId),
+  index("orders_status_date_vendor_idx").on(table.orderStatus, table.createdAt, table.vendorId),
   index("orders_razorpay_idx").on(table.razorpayOrderId),
 ]);
 
@@ -720,7 +722,10 @@ export const productCeilingPrices = sqliteTable("product_ceiling_prices", {
   effectiveUntil: text("effective_until"),
   sourceUrl: text("source_url").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [index("product_ceiling_prices_product_idx").on(table.productId, table.effectiveFrom)]);
+}, (table) => [
+  index("product_ceiling_prices_product_idx").on(table.productId, table.effectiveFrom),
+  index("product_ceiling_prices_effective_lookup_idx").on(table.productId, table.effectiveFrom, table.effectiveUntil),
+]);
 
 export const suppliers = sqliteTable("suppliers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -1160,6 +1165,7 @@ export const taxInvoices = sqliteTable("tax_invoices", {
   uniqueIndex("tax_invoices_number_uidx").on(table.invoiceNumber),
   uniqueIndex("tax_invoices_source_uidx").on(table.sourceType, table.sourceId),
   index("tax_invoices_vendor_date_idx").on(table.vendorId, table.issuedAt),
+  index("tax_invoices_source_date_idx").on(table.sourceType, table.issuedAt, table.sourceId),
   check("tax_invoices_source_check", sql`${table.sourceType} IN ('online_order', 'offline_sale') AND ${table.sourceId} > 0 AND length(trim(${table.sourceNumber})) > 0`),
   check("tax_invoices_identity_check", sql`length(trim(${table.invoiceNumber})) > 0 AND length(trim(${table.sellerName})) > 0 AND length(trim(${table.sellerAddress})) > 0 AND length(trim(${table.buyerName})) > 0 AND ${table.placeOfSupplyStateCode} GLOB '[0-9][0-9]' AND ${table.currency} = 'INR' AND ${table.snapshotVersion} = 1`),
   check("tax_invoices_amount_check", sql`${table.grossPaise} >= 0 AND ${table.discountPaise} >= 0 AND ${table.grossPaise} = ${table.subtotalPaise} + ${table.discountPaise} AND ${table.subtotalPaise} >= 0 AND ${table.cgstPaise} >= 0 AND ${table.sgstPaise} >= 0 AND ${table.igstPaise} >= 0 AND ${table.deliveryFeePaise} >= 0 AND ${table.totalPaise} = ${table.subtotalPaise} + ${table.cgstPaise} + ${table.sgstPaise} + ${table.igstPaise} + ${table.deliveryFeePaise}`),
@@ -1447,6 +1453,30 @@ export const transactionalEmailOutbox = sqliteTable("transactional_email_outbox"
   index("transactional_email_outbox_lease_idx").on(table.status, table.leaseExpiresAt, table.id),
   index("transactional_email_outbox_profile_idx").on(table.profileId, table.createdAt),
   check("transactional_email_outbox_attempt_check", sql`${table.attemptCount} >= 0 AND ${table.maxAttempts} BETWEEN 1 AND 12 AND ${table.attemptCount} <= ${table.maxAttempts}`),
+]);
+
+export const reminderDeliveryEvidence = sqliteTable("reminder_delivery_evidence", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  reminderType: text("reminder_type", { enum: ["pill", "refill"] }).notNull(),
+  reminderId: integer("reminder_id").notNull(),
+  profileId: integer("profile_id").notNull().references(() => accountProfiles.id),
+  localDate: text("local_date").notNull(),
+  channel: text("channel", { enum: ["email", "in_app"] }).notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  outboxId: integer("outbox_id").references(() => transactionalEmailOutbox.id),
+  status: text("status", { enum: ["queued", "processing", "sent", "retry_wait", "dead_letter", "cancelled"] }).notNull().default("queued"),
+  providerMessageId: text("provider_message_id").notNull().default(""),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  lastErrorCode: text("last_error_code").notNull().default(""),
+  lastErrorReason: text("last_error_reason").notNull().default(""),
+  sentAt: text("sent_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("reminder_delivery_evidence_dedupe_uidx").on(table.dedupeKey),
+  uniqueIndex("reminder_delivery_evidence_day_uidx").on(table.reminderType, table.reminderId, table.localDate, table.channel),
+  index("reminder_delivery_evidence_profile_idx").on(table.profileId, table.createdAt),
+  index("reminder_delivery_evidence_status_idx").on(table.status, table.updatedAt),
 ]);
 
 export const pillReminders = sqliteTable("pill_reminders", {

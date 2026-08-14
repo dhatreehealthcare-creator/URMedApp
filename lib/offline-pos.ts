@@ -3,6 +3,7 @@ import { currentOperationalVendorPredicate } from "./operational-vendor.ts";
 import { allocateFefo, calculateGst } from "./order-controls.ts";
 import { sha256Hex } from "./signatures.ts";
 import { prepareOfflineTaxInvoiceStatement } from "./tax-invoice.ts";
+import { effectivePriceFallbackSql } from "./effective-pricing.ts";
 
 export const POS_PAYMENT_MODES = ["cash", "upi", "card", "credit"] as const;
 export const POS_DRUG_SCHEDULES = ["OTC", "G", "H", "H1", "X", "NDPS", "UNCLASSIFIED"] as const;
@@ -510,7 +511,8 @@ export async function completeOfflineSale(input: {
   const batchesResult = await database.prepare(`SELECT inventory.id AS inventoryId,
     inventory.product_id AS productId, product.name AS productName,
     inventory.batch_number AS batchNumber, inventory.expiry_date AS expiryDate,
-    inventory.sale_price_paise AS unitPricePaise, inventory.gst_percent AS gstPercent,
+    ${effectivePriceFallbackSql("inventory", "sale_price_paise")} AS unitPricePaise,
+    ${effectivePriceFallbackSql("inventory", "gst_percent")} AS gstPercent,
     product.hsn_code AS hsnCode, inventory.mrp_paise AS mrpPaise,
     product.prescription_required AS prescriptionRequired, product.drug_schedule AS drugSchedule,
     inventory.quantity AS expectedQuantity, inventory.reserved_quantity AS reservedQuantity,

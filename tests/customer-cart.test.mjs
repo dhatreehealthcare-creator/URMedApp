@@ -53,7 +53,7 @@ test("server keeps pharmacy, FEFO, current price, tax, Rx, address and serviceab
   const orders = read("../app/api/orders/route.ts");
   assert.match(orders, /Place separate orders for different pharmacies/);
   assert.match(orders, /allocateFefo\(productRequest\.quantity, batches\.results\)/);
-  assert.match(orders, /i\.sale_price_paise AS salePricePaise/);
+  assert.match(orders, /effectivePriceFallbackSql\("i", "sale_price_paise"\)/);
   assert.match(orders, /calculateGst\(/);
   assert.match(orders, /customer_addresses\s+WHERE id=\? AND profile_id=\?/);
   assert.match(orders, /outside the pharmacy service area/);

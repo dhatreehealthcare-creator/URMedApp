@@ -1,6 +1,7 @@
 import { getD1 } from "../../../db/d1";
 import { currentOperationalVendorPredicate } from "../../../lib/operational-vendor";
 import { attachPublishedVendorLocation } from "../../../lib/vendor-public-location";
+import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
 
 type CatalogRow = {
   legacyId: number;
@@ -32,7 +33,7 @@ export async function GET(request: Request) {
         SELECT p.legacy_id AS legacyId, p.category_id AS categoryId, p.name, p.composition,
           COALESCE(canonical_manufacturer.name, p.manufacturer) AS manufacturer, p.prescription_required AS prescriptionRequired,
           p.gst_percent AS gstPercent, p.hsn_code AS hsnCode, p.packaging,
-          i.id AS inventoryId, i.sale_price_paise AS salePricePaise,
+          i.id AS inventoryId, ${effectivePriceFallbackSql("i", "sale_price_paise")} AS salePricePaise,
           (SELECT SUM(stock.quantity - stock.reserved_quantity) FROM pharmacy_inventory stock
             WHERE stock.vendor_id = i.vendor_id AND stock.product_id = i.product_id AND stock.active = 1
               AND stock.cold_chain_status IN ('not_applicable','within_range')
@@ -67,17 +68,17 @@ export async function GET(request: Request) {
             canonical_manufacturer.normalized_name LIKE ?
             OR EXISTS (SELECT 1 FROM manufacturer_aliases alias
               WHERE alias.manufacturer_id = canonical_manufacturer.id AND alias.normalized_alias LIKE ?)
-          )))
+          )) OR EXISTS (SELECT 1 FROM product_barcodes barcode WHERE barcode.product_id=p.id AND barcode.status='approved' AND barcode.code LIKE ?))
         ORDER BY CASE WHEN i.id IS NOT NULL THEN 0 ELSE 1 END,
           CASE WHEN p.normalized_name LIKE ? THEN 0 ELSE 1 END, p.name
         LIMIT ?
-      `).bind(`${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `${query}%`, limit).all<CatalogRow>();
+      `).bind(`${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `${query}%`, limit).all<CatalogRow>();
     } else {
       result = await db.prepare(`
         SELECT p.legacy_id AS legacyId, p.category_id AS categoryId, p.name, p.composition,
           COALESCE(canonical_manufacturer.name, p.manufacturer) AS manufacturer, p.prescription_required AS prescriptionRequired,
           p.gst_percent AS gstPercent, p.hsn_code AS hsnCode, p.packaging,
-          i.id AS inventoryId, i.sale_price_paise AS salePricePaise,
+          i.id AS inventoryId, ${effectivePriceFallbackSql("i", "sale_price_paise")} AS salePricePaise,
           (SELECT SUM(stock.quantity - stock.reserved_quantity) FROM pharmacy_inventory stock
             WHERE stock.vendor_id = i.vendor_id AND stock.product_id = i.product_id AND stock.active = 1
               AND stock.cold_chain_status IN ('not_applicable','within_range')

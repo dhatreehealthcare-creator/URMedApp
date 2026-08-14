@@ -10,6 +10,9 @@ const inspectPersistence = globalThis.__URMED_INTEGRATION_INSPECT__;
 const triggerScheduled = globalThis.__URMED_INTEGRATION_SCHEDULED__;
 const setTestClaims = globalThis.__URMED_INTEGRATION_SET_TEST_CLAIMS__;
 const enableEmail = globalThis.__URMED_INTEGRATION_ENABLE_EMAIL__;
+const prepareReminder = globalThis.__URMED_INTEGRATION_PREPARE_REMINDER__;
+const inspectReminder = globalThis.__URMED_INTEGRATION_REMINDER_INSPECT__;
+const controlReminder = globalThis.__URMED_INTEGRATION_REMINDER_CONTROL__;
 const inspectEmailOutbox = globalThis.__URMED_INTEGRATION_EMAIL_OUTBOX_INSPECT__;
 const expireOrder = globalThis.__URMED_INTEGRATION_EXPIRE_ORDER__;
 const orderEvidence = globalThis.__URMED_INTEGRATION_ORDER_EVIDENCE__;
@@ -21,6 +24,9 @@ for (const [name, value] of Object.entries({
   setTestClaims,
   enableEmail,
   inspectEmailOutbox,
+  prepareReminder,
+  inspectReminder,
+  controlReminder,
   expireOrder,
   orderEvidence,
   deliveryEvidence,
@@ -1704,6 +1710,121 @@ export async function runPhase0IntegrationSuite() {
     assert.ok(evidence.rows.some((row) => ["retry_wait", "sent", "dead_letter"].includes(row.status)));
     const after = await expectStatus(api("/api/admin/email-outbox", { token: context.tokens.admin }), 200, "admin email outbox after scheduled processing");
     assert.equal(after.payload.items.length, queued.payload.items.length);
+  });
+
+  await scenario("customer reminders are durable, preference-aware, retryable, and duplicate-safe", async () => {
+    await prepareReminder("customer@urmed.test");
+    const safety = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "customer reminder safety read");
+    assert.match(safety.response.headers.get("cache-control") ?? "", /private.*no-store/i);
+    const startDate = isoDate(-1);
+    const create = await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "create_reminder", medicineName: "P2 deleted reminder", dosageInstructions: "test", reminderTime: "00:00", startDate, recurrenceRule: "daily" },
+    }), 201, "create reminder");
+    assert.equal(create.payload.created, true);
+    let listed = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "list created reminder");
+    const deleted = listed.payload.reminders.find((reminder) => reminder.medicineName === "P2 deleted reminder");
+    assert.ok(deleted);
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "update_reminder", id: deleted.id, medicineName: "P2 deleted reminder edited", dosageInstructions: "edited", reminderTime: "00:00", startDate, recurrenceRule: "daily" },
+    }), 200, "edit reminder");
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customerTwo,
+      json: { action: "delete_reminder", id: deleted.id },
+    }), 404, "cross-customer reminder delete");
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "delete_reminder", id: deleted.id },
+    }), 200, "delete reminder before delivery");
+    await triggerScheduled("*/15 * * * *");
+    let reminderState = await inspectReminder();
+    assert.equal(reminderState.evidence.some((row) => row.reminderId === deleted.id), false, "deleted reminder must not enqueue stale delivery");
+
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "create_reminder", medicineName: "P2 durable daily reminder", dosageInstructions: "after food", reminderTime: "00:00", startDate, recurrenceRule: "daily" },
+    }), 201, "create recurring reminder");
+    listed = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "list recurring reminder");
+    const active = listed.payload.reminders.find((reminder) => reminder.medicineName === "P2 durable daily reminder");
+    assert.ok(active);
+    const firstReminderRun = await triggerScheduled("*/15 * * * *");
+    assert.equal(firstReminderRun.status, 200, firstReminderRun.text);
+    const repeatedReminderRun = await triggerScheduled("*/15 * * * *");
+    assert.equal(repeatedReminderRun.status, 200, repeatedReminderRun.text);
+    reminderState = await inspectReminder();
+    const activeEvidence = reminderState.evidence.filter((row) => row.reminderId === active.id && row.channel === "email");
+    assert.equal(activeEvidence.length, 1, "repeated scheduler execution must create one email evidence row");
+    assert.equal(reminderState.outbox.filter((row) => row.dedupeKey === activeEvidence[0].dedupeKey).length, 1);
+
+    await triggerScheduled("7,17,27,37,47,57 * * * *");
+    reminderState = await inspectReminder();
+    const sent = reminderState.outbox.find((row) => row.dedupeKey === activeEvidence[0].dedupeKey);
+    assert.equal(sent.status, "sent", "local provider success must record sent state");
+    assert.ok(sent.providerMessageId);
+
+    const preferenceState = await expectStatus(api("/api/notification-preferences", { token: context.tokens.customer }), 200, "read reminder preference");
+    const reminderPreference = preferenceState.payload.preferences.find((preference) => preference.category === "reminder");
+    assert.ok(reminderPreference);
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "create_reminder", medicineName: "P2 preference changed reminder", dosageInstructions: "after food", reminderTime: "00:00", startDate, recurrenceRule: "daily" },
+    }), 201, "create preference-change reminder");
+    listed = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "list preference-change reminder");
+    const preferenceChanged = listed.payload.reminders.find((reminder) => reminder.medicineName === "P2 preference changed reminder");
+    assert.ok(preferenceChanged);
+    await triggerScheduled("*/15 * * * *");
+    reminderState = await inspectReminder();
+    const preferenceEvidence = reminderState.evidence.find((row) => row.reminderId === preferenceChanged.id && row.channel === "email");
+    assert.ok(preferenceEvidence);
+    await expectStatus(api("/api/notification-preferences", {
+      token: context.tokens.customer,
+      json: { category: "reminder", inAppEnabled: true, emailEnabled: false, smsEnabled: false, timeZone: reminderPreference.timeZone, version: reminderPreference.version },
+    }), 200, "disable reminder email before delivery");
+    await triggerScheduled("7,17,27,37,47,57 * * * *");
+    reminderState = await inspectReminder();
+    assert.ok(reminderState.outbox.some((row) => row.dedupeKey === preferenceEvidence.dedupeKey && row.status === "cancelled"));
+
+    await expectStatus(api("/api/notification-preferences", {
+      token: context.tokens.customer,
+      json: { category: "reminder", inAppEnabled: true, emailEnabled: true, smsEnabled: false, timeZone: reminderPreference.timeZone, version: reminderPreference.version + 1 },
+    }), 200, "restore reminder email preference");
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "create_reminder", medicineName: "P2 lease recovery reminder", dosageInstructions: "test", reminderTime: "00:00", startDate, recurrenceRule: "daily" },
+    }), 201, "create lease recovery reminder");
+    listed = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "list lease recovery reminder");
+    const leaseReminder = listed.payload.reminders.find((reminder) => reminder.medicineName === "P2 lease recovery reminder");
+    assert.ok(leaseReminder);
+    await triggerScheduled("*/15 * * * *");
+    reminderState = await inspectReminder();
+    const leaseEvidence = reminderState.evidence.find((row) => row.reminderId === leaseReminder.id && row.channel === "email");
+    assert.ok(leaseEvidence);
+    await controlReminder({ dedupeKey: leaseEvidence.dedupeKey, action: "expire_lease" });
+    await triggerScheduled("7,17,27,37,47,57 * * * *");
+    reminderState = await inspectReminder();
+    const recovered = reminderState.outbox.find((row) => row.dedupeKey === leaseEvidence.dedupeKey);
+    assert.equal(recovered.status, "sent", "expired lease must recover without duplicate evidence");
+    assert.equal(reminderState.evidence.filter((row) => row.dedupeKey === leaseEvidence.dedupeKey).length, 1);
+
+    await expectStatus(api("/api/customer/safety", {
+      token: context.tokens.customer,
+      json: { action: "create_reminder", medicineName: "P2 dead-letter reminder", dosageInstructions: "test", reminderTime: "00:00", startDate, recurrenceRule: "daily" },
+    }), 201, "create dead-letter reminder");
+    listed = await expectStatus(api("/api/customer/safety", { token: context.tokens.customer }), 200, "list dead-letter reminder");
+    const dead = listed.payload.reminders.find((reminder) => reminder.medicineName === "P2 dead-letter reminder");
+    assert.ok(dead);
+    await triggerScheduled("*/15 * * * *");
+    reminderState = await inspectReminder();
+    const deadEvidence = reminderState.evidence.find((row) => row.reminderId === dead.id && row.channel === "email");
+    assert.ok(deadEvidence);
+    await controlReminder({ dedupeKey: deadEvidence.dedupeKey, action: "force_dead_letter" });
+    reminderState = await inspectReminder();
+    assert.equal(reminderState.outbox.find((row) => row.dedupeKey === deadEvidence.dedupeKey).status, "queued");
+    await triggerScheduled("7,17,27,37,47,57 * * * *");
+    reminderState = await inspectReminder();
+    assert.equal(reminderState.outbox.find((row) => row.dedupeKey === deadEvidence.dedupeKey).status, "dead_letter");
+    assert.equal(reminderState.evidence.find((row) => row.dedupeKey === deadEvidence.dedupeKey).status, "dead_letter");
   });
 
   await scenario("expired reservations cannot pay and scheduled recovery is idempotent without traffic", async () => {

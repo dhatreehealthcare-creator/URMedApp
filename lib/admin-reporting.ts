@@ -1,6 +1,22 @@
 import { haversineKm, isValidGeoPoint } from "./geo.ts";
+import { effectivePriceFallbackSql } from "./effective-pricing.ts";
 
 export type ReportPagination = { page: number; pageSize: number; total: number; totalPages: number };
+
+/**
+ * Synchronous exports are deliberately bounded.  They are generated inside the
+ * request and must never attempt to materialize an unbounded report in Worker
+ * memory.  Callers should narrow the filters (or use the paginated JSON API)
+ * when the filtered result exceeds this limit.
+ */
+export const REPORT_EXPORT_MAX_ROWS = 5_000;
+/**
+ * Home-delivery filtering includes derived distance/SLA values that are
+ * intentionally calculated in the Worker. Keep the date range bounded and
+ * refuse an exceptionally large candidate set explicitly rather than
+ * silently dropping rows before those filters run.
+ */
+const REPORT_QUERY_MAX_ROWS = 100_000;
 
 export class AdminReportError extends Error {
   readonly status: number;
@@ -53,7 +69,8 @@ export function parseReportDateRange(parameters: URLSearchParams, now = new Date
   return { dateFrom, dateTo, days };
 }
 
-function pagination(parameters: URLSearchParams) {
+function pagination(parameters: URLSearchParams, exportMode = false) {
+  if (exportMode) return { page: 1, pageSize: REPORT_EXPORT_MAX_ROWS + 1 };
   return {
     page: integer(parameters.get("page"), 1, 1, 100_000),
     pageSize: integer(parameters.get("pageSize"), 25, 5, 100),
@@ -141,7 +158,8 @@ type StockRow = {
 
 export async function loadAdminStockReport(database: D1Database, url: URL) {
   const parameters = url.searchParams;
-  const { page, pageSize } = pagination(parameters);
+  const exportMode = ["csv", "xlsx", "pdf"].includes(parameters.get("format") ?? "");
+  const { page, pageSize } = pagination(parameters, exportMode);
   const groupBy = choice(parameters.get("groupBy"), ["medicine", "manufacturer"] as const, "medicine");
   const stockState = choice(parameters.get("stockState"), ["all", "available", "low", "zero", "reserved", "quarantined", "expired"] as const, "all");
   const direction = choice(parameters.get("direction"), ["asc", "desc"] as const, "asc");
@@ -189,8 +207,8 @@ export async function loadAdminStockReport(database: D1Database, url: URL) {
       COALESCE(SUM(CASE WHEN i.quarantine_status<>'available' THEN i.quantity ELSE 0 END),0) AS quarantinedQuantity,
       COALESCE(SUM(CASE WHEN i.expiry_date IS NOT NULL AND date(i.expiry_date)<date('now') THEN i.quantity ELSE 0 END),0) AS expiredQuantity,
       SUM(CASE WHEN i.quantity-i.reserved_quantity<=i.reorder_level THEN 1 ELSE 0 END) AS lowBatchCount,
-      COALESCE(SUM(i.purchase_price_paise*i.quantity),0) AS stockCostPaise,
-      COALESCE(SUM(i.sale_price_paise*i.quantity),0) AS retailValuePaise,
+      COALESCE(SUM(${effectivePriceFallbackSql("i", "purchase_price_paise")}*i.quantity),0) AS stockCostPaise,
+      COALESCE(SUM(${effectivePriceFallbackSql("i", "sale_price_paise")}*i.quantity),0) AS retailValuePaise,
       MIN(CASE WHEN i.expiry_date IS NOT NULL AND date(i.expiry_date)>=date('now') THEN i.expiry_date END) AS nearestExpiry
     FROM pharmacy_inventory i JOIN products p ON p.id=i.product_id
     LEFT JOIN manufacturers m ON m.id=p.manufacturer_id
@@ -210,6 +228,9 @@ export async function loadAdminStockReport(database: D1Database, url: URL) {
       FROM filtered`).bind(...binds).first<{ total: number; physicalQuantity: number; reservedQuantity: number; availableQuantity: number; stockCostPaise: number; retailValuePaise: number }>(),
   ]);
   const total = Number(summary?.total ?? 0);
+  if (exportMode && total > REPORT_EXPORT_MAX_ROWS) {
+    throw new AdminReportError(`This export contains ${total} rows; narrow the filters to ${REPORT_EXPORT_MAX_ROWS.toLocaleString()} rows or fewer`, 422);
+  }
   return { report: "stock" as const, groupBy, rows: rowsResult.results, summary: summary ?? { total: 0, physicalQuantity: 0, reservedQuantity: 0, availableQuantity: 0, stockCostPaise: 0, retailValuePaise: 0 }, pagination: pageMeta(page, pageSize, total) };
 }
 
@@ -222,7 +243,8 @@ type SalesRow = {
 export async function loadAdminSalesReport(database: D1Database, url: URL) {
   const parameters = url.searchParams;
   const dates = parseReportDateRange(parameters);
-  const { page, pageSize } = pagination(parameters);
+  const exportMode = ["csv", "xlsx", "pdf"].includes(parameters.get("format") ?? "");
+  const { page, pageSize } = pagination(parameters, exportMode);
   const groupBy = choice(parameters.get("groupBy"), ["date", "medicine"] as const, "date");
   const channel = choice(parameters.get("channel"), ["all", "online", "offline"] as const, "all");
   const sort = choice(parameters.get("sort"), ["date", "medicine", "gross", "returns", "net", "quantity"] as const, groupBy === "date" ? "date" : "medicine");
@@ -294,6 +316,9 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
       .bind(...binds).first<{ total: number; transactions: number; returnTransactions: number; soldQuantity: number; returnedQuantity: number; grossSalesPaise: number; returnedPaise: number; netSalesPaise: number }>(),
   ]);
   const total = Number(summary?.total ?? 0);
+  if (exportMode && total > REPORT_EXPORT_MAX_ROWS) {
+    throw new AdminReportError(`This export contains ${total} rows; narrow the filters to ${REPORT_EXPORT_MAX_ROWS.toLocaleString()} rows or fewer`, 422);
+  }
   return { report: "sales" as const, groupBy, dates, rows: rowsResult.results, summary: summary ?? { total: 0, transactions: 0, returnTransactions: 0, soldQuantity: 0, returnedQuantity: 0, grossSalesPaise: 0, returnedPaise: 0, netSalesPaise: 0 }, pagination: pageMeta(page, pageSize, total), recognition: "completed_sales_and_completed_returns" as const };
 }
 
@@ -305,7 +330,8 @@ type ExpenseRow = {
 export async function loadAdminExpenseReport(database: D1Database, url: URL) {
   const parameters = url.searchParams;
   const dates = parseReportDateRange(parameters);
-  const { page, pageSize } = pagination(parameters);
+  const exportMode = ["csv", "xlsx", "pdf"].includes(parameters.get("format") ?? "");
+  const { page, pageSize } = pagination(parameters, exportMode);
   const groupBy = choice(parameters.get("groupBy"), ["entry", "date", "head", "store"] as const, "date");
   const scope = choice(parameters.get("scope"), ["all", "store", "platform"] as const, "all");
   const payment = choice(parameters.get("payment"), ["all", "cash", "upi", "bank", "card", "other"] as const, "all");
@@ -351,6 +377,9 @@ export async function loadAdminExpenseReport(database: D1Database, url: URL) {
       .first<{ total: number; entryCount: number; amountPaise: number }>(),
   ]);
   const total = Number(summary?.total ?? 0);
+  if (exportMode && total > REPORT_EXPORT_MAX_ROWS) {
+    throw new AdminReportError(`This export contains ${total} rows; narrow the filters to ${REPORT_EXPORT_MAX_ROWS.toLocaleString()} rows or fewer`, 422);
+  }
   return { report: "expenses" as const, groupBy, dates, rows: rowsResult.results, summary: summary ?? { total: 0, entryCount: 0, amountPaise: 0 }, pagination: pageMeta(page, pageSize, total) };
 }
 
@@ -388,7 +417,8 @@ export function calculateDeliveryReportRow(candidate: DeliveryCandidate, slaTarg
 export async function loadAdminDeliveryReport(database: D1Database, url: URL, now = new Date()) {
   const parameters = url.searchParams;
   const dates = parseReportDateRange(parameters, now, 92);
-  const { page, pageSize } = pagination(parameters);
+  const exportMode = ["csv", "xlsx", "pdf"].includes(parameters.get("format") ?? "");
+  const { page, pageSize } = pagination(parameters, exportMode);
   const method = choice(parameters.get("method"), ["all", "pharmacy", "urmed"] as const, "all");
   const status = choice(parameters.get("status"), ["all", "awaiting_confirmation", "pharmacist_review", "confirmed", "packed", "ready_for_pickup", "assigned", "picked_up", "out_for_delivery", "delivered", "cancelled"] as const, "all");
   const rider = choice(parameters.get("rider"), ["all", "assigned", "unassigned"] as const, "all");
@@ -429,10 +459,12 @@ export async function loadAdminDeliveryReport(database: D1Database, url: URL, no
       AND (?='all' OR o.delivery_status=?)
       AND (?='' OR lower(o.order_number) LIKE ? ESCAPE '\\' OR lower(v.business_name) LIKE ? ESCAPE '\\'
         OR lower(COALESCE(rider_profile.name,'')) LIKE ? ESCAPE '\\')
-    ORDER BY o.created_at DESC,o.id DESC LIMIT 5001`)
+    ORDER BY o.created_at DESC,o.id DESC LIMIT ${REPORT_QUERY_MAX_ROWS + 1}`)
     .bind(dates.dateFrom, dates.dateTo, vendorId, vendorId, method, method, status, status, query, search, search, search)
     .all<DeliveryCandidate>();
-  if (candidates.results.length > 5_000) throw new AdminReportError("Narrow the delivery date range before running this report", 422);
+  if (candidates.results.length > REPORT_QUERY_MAX_ROWS) {
+    throw new AdminReportError(`This delivery report contains more than ${REPORT_QUERY_MAX_ROWS.toLocaleString()} candidate rows; narrow the date range or filters`, 422);
+  }
   const rows = candidates.results.map((candidate) => calculateDeliveryReportRow(candidate, slaTargetMinutes, now)).filter((row) => {
     if (rider === "assigned" && !row.riderName) return false;
     if (rider === "unassigned" && row.riderName) return false;
@@ -457,6 +489,9 @@ export async function loadAdminDeliveryReport(database: D1Database, url: URL, no
   };
   rows.sort((left, right) => (direction === "asc" ? 1 : -1) * comparators[sort](left, right) || right.orderId - left.orderId);
   const total = rows.length;
+  if (exportMode && total > REPORT_EXPORT_MAX_ROWS) {
+    throw new AdminReportError(`This export contains ${total} rows; narrow the filters to ${REPORT_EXPORT_MAX_ROWS.toLocaleString()} rows or fewer`, 422);
+  }
   const pagedRows = rows.slice((page - 1) * pageSize, page * pageSize);
   const distanceRows = rows.filter((row) => row.estimatedDistanceKm !== null);
   return {

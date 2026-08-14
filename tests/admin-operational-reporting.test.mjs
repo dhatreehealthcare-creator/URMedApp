@@ -31,6 +31,9 @@ function fixture() {
     CREATE TABLE pharmacy_inventory(id INTEGER PRIMARY KEY,vendor_id INTEGER,product_id INTEGER,expiry_date TEXT,
       purchase_price_paise INTEGER,sale_price_paise INTEGER,quantity INTEGER,reserved_quantity INTEGER,
       reorder_level INTEGER,quarantine_status TEXT,cold_chain_status TEXT,active INTEGER);
+    CREATE TABLE inventory_price_history(id INTEGER PRIMARY KEY,inventory_id INTEGER,vendor_id INTEGER,product_id INTEGER,
+      purchase_price_paise INTEGER,sale_price_paise INTEGER,mrp_paise INTEGER,gst_percent INTEGER,
+      effective_from TEXT,effective_until TEXT);
     CREATE TABLE orders(id INTEGER PRIMARY KEY,order_number TEXT,vendor_id INTEGER,order_status TEXT,
       delivery_method TEXT,delivery_status TEXT,payment_method TEXT,payment_status TEXT,delivery_fee_paise INTEGER,
       total_paise INTEGER,created_at TEXT,latitude TEXT,longitude TEXT);
@@ -56,6 +59,10 @@ function fixture() {
       (100,1,10,'2027-01-01',500,900,10,3,4,'available','not_applicable',1),
       (101,2,10,'2025-01-01',500,900,2,0,4,'available','not_applicable',1),
       (102,1,11,'2027-02-01',300,500,4,0,2,'quality_hold','not_applicable',1);
+    INSERT INTO inventory_price_history VALUES
+      (1,100,1,10,500,900,1000,5,'2026-01-01',NULL),
+      (2,101,2,10,500,900,1000,5,'2026-01-01',NULL),
+      (3,102,1,11,300,500,600,5,'2026-01-01',NULL);
     INSERT INTO orders VALUES
       (200,'ORD-200',1,'completed','urmed','delivered','cod','paid',500,2600,'2026-08-01T10:00:00Z','17.4400','78.4100'),
       (201,'ORD-201',1,'cancelled','pharmacy','cancelled','online','failed',0,900,'2026-08-02T10:00:00Z','17.4500','78.4200');
@@ -120,6 +127,22 @@ test("expense report filters store/platform scope and groups without claiming fi
   const platform = await loadAdminExpenseReport(d1, new URL("https://urmed.test/api?dateFrom=2026-08-01&dateTo=2026-08-31&groupBy=head&scope=platform&payment=card"));
   assert.equal(platform.rows[0].expenseHead, "Hosting");
   assert.equal(platform.summary.amountPaise, 2000);
+});
+
+test("synchronous exports contain the complete filtered result, not the requested JSON page", async (t) => {
+  const { sqlite, d1 } = fixture(); t.after(() => sqlite.close());
+  const stock = await loadAdminStockReport(d1, new URL("https://urmed.test/api?groupBy=medicine&format=csv&page=99&pageSize=5"));
+  assert.equal(stock.pagination.page, 1);
+  assert.equal(stock.rows.length, stock.pagination.total);
+  const sales = await loadAdminSalesReport(d1, new URL("https://urmed.test/api?dateFrom=2026-08-01&dateTo=2026-08-31&groupBy=medicine&format=xlsx&page=99&pageSize=5"));
+  assert.equal(sales.pagination.page, 1);
+  assert.equal(sales.rows.length, sales.pagination.total);
+  const expenses = await loadAdminExpenseReport(d1, new URL("https://urmed.test/api?dateFrom=2026-08-01&dateTo=2026-08-31&groupBy=entry&format=pdf&page=99&pageSize=5"));
+  assert.equal(expenses.pagination.page, 1);
+  assert.equal(expenses.rows.length, expenses.pagination.total);
+  const delivery = await loadAdminDeliveryReport(d1, new URL("https://urmed.test/api?dateFrom=2026-08-01&dateTo=2026-08-31&format=csv&page=99&pageSize=5"));
+  assert.equal(delivery.pagination.page, 1);
+  assert.equal(delivery.rows.length, delivery.pagination.total);
 });
 
 test("home-delivery report returns operational metrics without coordinates or customer PII", async (t) => {

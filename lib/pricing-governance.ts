@@ -30,7 +30,8 @@ export function validatePricePolicy(input: { purchasePricePaise: unknown; salePr
   if (!Number.isSafeInteger(salePricePaise) || salePricePaise <= 0) throw new PricingGovernanceError("Sale price must be positive");
   if (!Number.isSafeInteger(mrpPaise) || mrpPaise <= 0 || salePricePaise > mrpPaise) throw new PricingGovernanceError("Sale price cannot exceed tax-inclusive MRP");
   if (![0, 5, 12, 18, 28].includes(gstPercent)) throw new PricingGovernanceError("GST must be 0, 5, 12, 18 or 28 percent");
-  if (enforceCeiling && ceilingPaise != null && mrpPaise > ceilingPaise) throw new PricingGovernanceError("MRP exceeds the effective governed ceiling");
+  if (enforceCeiling && ceilingPaise == null) throw new PricingGovernanceError("An approved effective ceiling is required while NPPA enforcement is enabled", 409);
+  if (enforceCeiling && mrpPaise > ceilingPaise!) throw new PricingGovernanceError("MRP exceeds the effective governed ceiling", 409);
   return { purchasePricePaise, salePricePaise, mrpPaise, gstPercent, ceilingAdvisory: ceilingPaise != null && mrpPaise > ceilingPaise };
 }
 

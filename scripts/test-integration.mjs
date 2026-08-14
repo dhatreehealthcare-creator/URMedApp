@@ -27,6 +27,7 @@ const providerUsers = new Map([
 const razorpayOrders = new Map();
 const razorpayRefunds = new Map();
 const razorpayRefundAttempts = new Map();
+const resendPermanentFailures = new Set();
 
 let runtime;
 let activeCommand;
@@ -58,6 +59,20 @@ async function localProviderResponse(request) {
     });
   }
   if (url.hostname !== "api.razorpay.com") {
+    if (url.hostname === "api.resend.com" && request.method === "POST" && url.pathname === "/emails") {
+      if (request.headers.get("authorization") !== "Bearer urmed-local-resend-key") {
+        return Response.json({ error: "Invalid local Resend credentials" }, { status: 401 });
+      }
+      const body = await request.json();
+      if (!Array.isArray(body.to) || !body.to.length || !body.subject) {
+        return Response.json({ error: "Invalid local email" }, { status: 400 });
+      }
+      const key = request.headers.get("idempotency-key") ?? `no-key-${Date.now()}`;
+      if (resendPermanentFailures.has(key)) {
+        return Response.json({ error: "Deterministic local permanent email rejection" }, { status: 400 });
+      }
+      return Response.json({ id: `msg_local_${Buffer.from(key).toString("base64url").slice(0, 32)}` });
+    }
     return new Response("External network disabled during integration tests", { status: 503 });
   }
   const expectedBasic = `Basic ${Buffer.from("rzp_test_urmed_p009:urmed-p009-razorpay-secret").toString("base64")}`;
@@ -275,6 +290,8 @@ try {
       INTEGRATION_TEST_AUTH_SECRET: integrationTestAuthSecret,
       SUPABASE_URL: "https://supabase.integration.invalid",
       SUPABASE_ANON_KEY: "p103-local-anon-key",
+      RESEND_API_KEY: "urmed-local-resend-key",
+      RESEND_FROM_EMAIL: "no-reply@urmed.test",
       RAZORPAY_KEY_ID: "rzp_test_urmed_p009",
       RAZORPAY_KEY_SECRET: "urmed-p009-razorpay-secret",
       RAZORPAY_WEBHOOK_SECRET: "urmed-p009-webhook-secret",
@@ -311,6 +328,44 @@ try {
       WHERE profile_id=? AND category IN ('transactional','safety','reminder')`).bind(profile.id).run();
     if (Number(result.meta.changes ?? 0) < 3) throw new Error(`Email preferences are incomplete for ${normalizedEmail}`);
     return { profileId: profile.id };
+  };
+  globalThis.__URMED_INTEGRATION_PREPARE_REMINDER__ = async (email) => {
+    const normalizedEmail = String(email ?? "").trim().toLowerCase();
+    const profile = await integrationDatabase.prepare("SELECT id FROM account_profiles WHERE email=? AND status='active' LIMIT 1")
+      .bind(normalizedEmail).first();
+    if (!profile) throw new Error(`The integration reminder profile ${normalizedEmail} does not exist`);
+    await integrationDatabase.prepare(`INSERT INTO data_consents
+      (profile_id,purpose,policy_version,consent_status,captured_ip_hash,granted_at)
+      SELECT ?, 'health_reminders','URMED-DPDP-2026.1','granted','integration',CURRENT_TIMESTAMP
+      WHERE NOT EXISTS (SELECT 1 FROM data_consents WHERE profile_id=? AND purpose='health_reminders' AND consent_status='granted')`)
+      .bind(profile.id, profile.id).run();
+    await integrationDatabase.prepare(`UPDATE notification_preferences
+      SET in_app_enabled=1,email_enabled=1,time_zone='Asia/Kolkata',version=version+1,updated_at=CURRENT_TIMESTAMP
+      WHERE profile_id=? AND category='reminder'`).bind(profile.id).run();
+    return { profileId: profile.id };
+  };
+  globalThis.__URMED_INTEGRATION_REMINDER_INSPECT__ = async (email = "customer@urmed.test") => {
+    const profile = await integrationDatabase.prepare("SELECT id FROM account_profiles WHERE email=? LIMIT 1").bind(email).first();
+    if (!profile) throw new Error(`Integration reminder profile ${email} does not exist`);
+    const [reminders, evidence, outbox] = await Promise.all([
+      integrationDatabase.prepare(`SELECT id,active,reminder_time AS reminderTime,start_date AS startDate,end_date AS endDate,recurrence_rule AS recurrenceRule
+        FROM pill_reminders WHERE customer_profile_id=? ORDER BY id`).bind(profile.id).all(),
+      integrationDatabase.prepare(`SELECT reminder_type AS reminderType,reminder_id AS reminderId,local_date AS localDate,channel,status,attempt_count AS attemptCount,
+        provider_message_id AS providerMessageId,dedupe_key AS dedupeKey,outbox_id AS outboxId,last_error_code AS lastErrorCode
+        FROM reminder_delivery_evidence WHERE profile_id=? ORDER BY id`).bind(profile.id).all(),
+      integrationDatabase.prepare(`SELECT id,status,attempt_count AS attemptCount,max_attempts AS maxAttempts,provider_message_id AS providerMessageId,dedupe_key AS dedupeKey
+        FROM transactional_email_outbox WHERE profile_id=? AND category='reminder' ORDER BY id`).bind(profile.id).all(),
+    ]);
+    return { profileId: profile.id, reminders: reminders.results, evidence: evidence.results, outbox: outbox.results };
+  };
+  globalThis.__URMED_INTEGRATION_REMINDER_CONTROL__ = async ({ dedupeKey, action }) => {
+    if (!dedupeKey || !["expire_lease", "force_dead_letter"].includes(action)) throw new Error("Invalid reminder control");
+    if (action === "expire_lease") {
+      await integrationDatabase.prepare(`UPDATE transactional_email_outbox SET status='processing',attempt_count=attempt_count+1,lease_owner='integration-crashed',lease_expires_at='2000-01-01T00:00:00.000Z',provider_message_id='',sent_at=NULL,updated_at='2000-01-01T00:00:00.000Z' WHERE dedupe_key=? AND status IN ('queued','retry_wait')`).bind(dedupeKey).run();
+      await integrationDatabase.prepare(`UPDATE reminder_delivery_evidence SET status='processing',attempt_count=attempt_count+1,provider_message_id='',sent_at=NULL,updated_at='2000-01-01T00:00:00.000Z' WHERE dedupe_key=? AND status IN ('queued','retry_wait')`).bind(dedupeKey).run();
+    } else {
+      resendPermanentFailures.add(dedupeKey);
+    }
   };
   globalThis.__URMED_INTEGRATION_EMAIL_OUTBOX_INSPECT__ = async () => {
     const rows = await integrationDatabase.prepare(`SELECT id,status,attempt_count AS attemptCount,
@@ -594,10 +649,14 @@ try {
   delete globalThis.__URMED_INTEGRATION_SCHEDULED__;
   delete globalThis.__URMED_INTEGRATION_SET_TEST_CLAIMS__;
   delete globalThis.__URMED_INTEGRATION_ENABLE_EMAIL__;
+  delete globalThis.__URMED_INTEGRATION_PREPARE_REMINDER__;
+  delete globalThis.__URMED_INTEGRATION_REMINDER_INSPECT__;
+  delete globalThis.__URMED_INTEGRATION_REMINDER_CONTROL__;
   delete globalThis.__URMED_INTEGRATION_EMAIL_OUTBOX_INSPECT__;
   delete globalThis.__URMED_INTEGRATION_EXPIRE_ORDER__;
   delete globalThis.__URMED_INTEGRATION_ORDER_EVIDENCE__;
   delete globalThis.__URMED_INTEGRATION_DELIVERY_EVIDENCE__;
   delete globalThis.__URMED_INTEGRATION_R2_COUNT__;
+  resendPermanentFailures.clear();
   if (!interruptedSignal) await cleanup();
 }

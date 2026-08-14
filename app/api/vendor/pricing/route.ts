@@ -33,16 +33,17 @@ export async function POST(request: Request) {
       const inventoryId = positiveInteger(body.inventoryId, "Inventory batch");
       const inventory = await db.prepare("SELECT id,product_id AS productId,purchase_price_paise AS purchasePricePaise,sale_price_paise AS salePricePaise,mrp_paise AS mrpPaise,gst_percent AS gstPercent FROM pharmacy_inventory WHERE id=? AND vendor_id=? AND active=1").bind(inventoryId, vendorId).first<{id:number;productId:number;purchasePricePaise:number;salePricePaise:number;mrpPaise:number;gstPercent:number}>();
       if (!inventory) return Response.json({ error: "Inventory batch was not found" }, { status: 404, headers });
-      const ceiling = await db.prepare("SELECT ceiling_price_paise AS ceilingPaise FROM product_ceiling_prices WHERE product_id=? AND date(effective_from)<=date(?) AND (effective_until IS NULL OR date(effective_until)>=date(?)) ORDER BY date(effective_from) DESC,id DESC LIMIT 1").bind(inventory.productId, new Date().toISOString().slice(0, 10), new Date().toISOString().slice(0, 10)).first<{ ceilingPaise:number }>();
+      const effectiveFrom = isoDate(body.effectiveFrom ?? new Date().toISOString().slice(0, 10), "Effective date")!;
+      const ceiling = await db.prepare("SELECT ceiling_price_paise AS ceilingPaise FROM product_ceiling_prices WHERE product_id=? AND date(effective_from)<=date(?) AND (effective_until IS NULL OR date(effective_until)>date(?)) ORDER BY date(effective_from) DESC,id DESC LIMIT 1").bind(inventory.productId, effectiveFrom, effectiveFrom).first<{ ceilingPaise:number }>();
       const ceilingEnforced = getRuntimeEnv().NPPA_CEILING_MODE === "enforce";
       const policy = validatePricePolicy({ purchasePricePaise: body.purchasePricePaise ?? inventory.purchasePricePaise, salePricePaise: body.salePricePaise, mrpPaise: body.mrpPaise, gstPercent: body.gstPercent ?? inventory.gstPercent }, ceiling?.ceilingPaise ?? null, ceilingEnforced);
-      const effectiveFrom = isoDate(body.effectiveFrom ?? new Date().toISOString().slice(0, 10), "Effective date")!;
       const reason = String(body.reason ?? "").trim().slice(0, 240); if (reason.length < 5) return Response.json({ error: "A pricing reason is required" }, { status: 400, headers });
       const result = await db.batch([
+        db.prepare("UPDATE inventory_price_history SET effective_until=? WHERE inventory_id=? AND date(effective_from)<date(?) AND effective_until IS NULL").bind(effectiveFrom, inventoryId, effectiveFrom),
         db.prepare("INSERT INTO inventory_price_history (inventory_id,vendor_id,product_id,purchase_price_paise,sale_price_paise,mrp_paise,gst_percent,effective_from,source,reason,created_by_profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)").bind(inventoryId,vendorId,inventory.productId,policy.purchasePricePaise,policy.salePricePaise,policy.mrpPaise,policy.gstPercent,effectiveFrom,"vendor",reason,profile.id),
         db.prepare("UPDATE pharmacy_inventory SET purchase_price_paise=?,sale_price_paise=?,mrp_paise=?,gst_percent=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=? AND active=1 AND ?<=date('now')").bind(policy.purchasePricePaise,policy.salePricePaise,policy.mrpPaise,policy.gstPercent,inventoryId,vendorId,effectiveFrom),
       ]);
-      return Response.json({ saved: true, effectiveFrom, appliedNow: Number(result[1]?.meta.changes ?? 0) === 1, ceilingAdvisory: policy.ceilingAdvisory }, { status: 201, headers });
+      return Response.json({ saved: true, effectiveFrom, appliedNow: Number(result[2]?.meta.changes ?? 0) === 1, ceilingAdvisory: policy.ceilingAdvisory }, { status: 201, headers });
     }
     if (action === "conversion") {
       const requestedProductId = positiveInteger(body.productId, "Product");

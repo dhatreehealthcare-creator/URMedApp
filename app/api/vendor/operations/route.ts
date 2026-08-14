@@ -5,6 +5,7 @@ import { requireVendorPermission } from "../../../../lib/vendor-access";
 import { releaseExpiredReservations } from "../../../../lib/inventory-reservations";
 import { completeSupplierReturn, listReturnablePurchases, PurchaseLifecycleError } from "../../../../lib/supplier-returns";
 import { completeSalesReturn, SalesReturnError } from "../../../../lib/sales-returns";
+import { effectivePriceFallbackSql } from "../../../../lib/effective-pricing";
 
 const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
@@ -32,7 +33,7 @@ export async function GET(request: Request) {
         UNION ALL SELECT date(created_at), 'offline', COUNT(*), SUM(total_paise) FROM offline_sales WHERE vendor_id = ? GROUP BY date(created_at)
         ORDER BY saleDate DESC LIMIT 60`).bind(vendorId, vendorId).all(),
       db.prepare(`SELECT i.id, p.name AS productName, i.batch_number AS batchNumber, i.expiry_date AS expiryDate,
-        i.quantity, i.sale_price_paise AS salePricePaise, i.storage_location AS storageLocation,
+        i.quantity, ${effectivePriceFallbackSql("i", "sale_price_paise")} AS salePricePaise, i.storage_location AS storageLocation,
         p.cold_chain_required AS coldChainRequired, i.quarantine_status AS quarantineStatus
         FROM pharmacy_inventory i JOIN products p ON p.id=i.product_id WHERE i.vendor_id=? ORDER BY p.name, date(i.expiry_date) LIMIT 250`).bind(vendorId).all(),
       db.prepare(`SELECT return_number AS returnNumber, credit_note_number AS creditNoteNumber, source_type AS sourceType,

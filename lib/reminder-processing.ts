@@ -58,8 +58,6 @@ export type ProcessRemindersInput = {
   requestId?: string;
   limit?: number;
   timeZone?: string;
-  /** @deprecated Email delivery is now handled by the transactional outbox worker. */
-  sendEmail?: (to: string, subject: string, html: string) => Promise<{ sent: boolean; reason?: string }>;
   appendAudit?: boolean;
 };
 
@@ -122,9 +120,9 @@ async function dueReminderRows(input: Pick<ProcessRemindersInput, "db" | "now" |
       COALESCE(preference.time_zone,?) AS timeZone,
       (SELECT MAX(date(n.created_at)) FROM notifications n WHERE n.profile_id=profile.id
         AND n.reference_type='pill_reminder' AND n.reference_id=p.id) AS lastNotificationDate,
-      (SELECT MAX(substr(event.entity_id,-10)) FROM audit_events event
-        WHERE event.actor_profile_id=profile.id AND event.action='reminder.email_sent'
-          AND event.entity_type='pill_reminder' AND event.entity_id LIKE CAST(p.id AS TEXT)||':%') AS lastEmailLocalDate
+      (SELECT MAX(evidence.local_date) FROM reminder_delivery_evidence evidence
+        WHERE evidence.profile_id=profile.id AND evidence.reminder_type='pill' AND evidence.reminder_id=p.id
+          AND evidence.channel='email' AND evidence.status='sent') AS lastEmailLocalDate
       FROM pill_reminders p JOIN account_profiles profile ON profile.id=p.customer_profile_id
       LEFT JOIN notification_preferences preference ON preference.profile_id=profile.id AND preference.category='reminder'
       WHERE profile.status='active' AND p.active=1 AND ${consentPredicate}
@@ -209,6 +207,10 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
         AND (last_notified_at IS NULL OR date(last_notified_at)<date(?))`)
         .bind(`${row.localDate}T${row.localTime}:00`, `${row.localDate}T${row.localTime}:00`, row.id, row.localDate),
     ];
+    if (row.inAppEnabled) statements.push(input.db.prepare(`INSERT OR IGNORE INTO reminder_delivery_evidence
+      (reminder_type,reminder_id,profile_id,local_date,channel,dedupe_key,status,sent_at,updated_at)
+      VALUES ('refill',?,?,?,'in_app',?,'sent',?,?)`).bind(row.id, row.profileId, row.localDate,
+      `refill_in_app:${row.id}:${row.localDate}`, `${row.localDate}T${row.localTime}:00`, `${row.localDate}T${row.localTime}:00`));
     if (row.emailEnabled) {
       statements.push(prepareTransactionalEmailEnqueueStatement(input.db, {
         profileId: row.profileId,
@@ -216,6 +218,10 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
         payload: { medicineName: row.medicineName, dueDate: row.dueDate },
         dedupeKey: `refill_due:${row.id}:${row.localDate}`,
       }));
+      statements.push(input.db.prepare(`INSERT OR IGNORE INTO reminder_delivery_evidence
+        (reminder_type,reminder_id,profile_id,local_date,channel,dedupe_key,outbox_id,status,updated_at)
+        VALUES ('refill',?,?,?,'email',?,(SELECT id FROM transactional_email_outbox WHERE dedupe_key=?),'queued',?)`)
+        .bind(row.id, row.profileId, row.localDate, `refill_due:${row.id}:${row.localDate}`, `refill_due:${row.id}:${row.localDate}`, `${row.localDate}T${row.localTime}:00`));
     }
     const results = await input.db.batch(statements);
     if (!Number(results[1]?.meta.changes ?? 0)) continue;
@@ -233,6 +239,10 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
           AND reference_id=? AND date(created_at)=date(?))`)
         .bind(row.profileId, `${row.medicineName} at ${row.reminderTime}. ${row.dosageInstructions}`.trim(),
           row.id, `${row.localDate}T${row.localTime}:00`, row.profileId, row.id, row.localDate));
+      statements.push(input.db.prepare(`INSERT OR IGNORE INTO reminder_delivery_evidence
+        (reminder_type,reminder_id,profile_id,local_date,channel,dedupe_key,status,sent_at,updated_at)
+        VALUES ('pill',?,?,?,'in_app',?,'sent',?,?)`).bind(row.id, row.profileId, row.localDate,
+        `pill_in_app:${row.id}:${row.localDate}`, `${row.localDate}T${row.localTime}:00`, `${row.localDate}T${row.localTime}:00`));
     }
     if (row.emailEnabled) {
       statements.push(prepareTransactionalEmailEnqueueStatement(input.db, {
@@ -241,6 +251,10 @@ export async function processDueReminders(input: ProcessRemindersInput): Promise
         payload: { medicineName: row.medicineName, reminderTime: row.reminderTime, dosageInstructions: row.dosageInstructions },
         dedupeKey: `pill_due:${row.id}:${row.localDate}`,
       }));
+      statements.push(input.db.prepare(`INSERT OR IGNORE INTO reminder_delivery_evidence
+        (reminder_type,reminder_id,profile_id,local_date,channel,dedupe_key,outbox_id,status,updated_at)
+        VALUES ('pill',?,?,?,'email',?,(SELECT id FROM transactional_email_outbox WHERE dedupe_key=?),'queued',?)`)
+        .bind(row.id, row.profileId, row.localDate, `pill_due:${row.id}:${row.localDate}`, `pill_due:${row.id}:${row.localDate}`, `${row.localDate}T${row.localTime}:00`));
     }
     const results = statements.length ? await input.db.batch(statements) : [];
     if (!results.some((result) => Number(result?.meta.changes ?? 0) > 0)) continue;

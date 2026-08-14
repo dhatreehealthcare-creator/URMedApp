@@ -49,6 +49,13 @@ function fixture(t) {
       next_attempt_at TEXT NOT NULL,lease_owner TEXT NOT NULL DEFAULT '',lease_expires_at TEXT,provider_message_id TEXT NOT NULL DEFAULT '',last_error_code TEXT NOT NULL DEFAULT '',last_error_reason TEXT NOT NULL DEFAULT '',
       sent_at TEXT,dead_lettered_at TEXT,cancelled_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE reminder_delivery_evidence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, reminder_type TEXT NOT NULL, reminder_id INTEGER NOT NULL,
+      profile_id INTEGER NOT NULL, local_date TEXT NOT NULL, channel TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE,
+      outbox_id INTEGER, status TEXT NOT NULL DEFAULT 'queued', provider_message_id TEXT NOT NULL DEFAULT '',
+      attempt_count INTEGER NOT NULL DEFAULT 0, last_error_code TEXT NOT NULL DEFAULT '', last_error_reason TEXT NOT NULL DEFAULT '',
+      sent_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
     INSERT INTO account_profiles VALUES (1,'customer@example.test',1,'active'),(2,'unverified@example.test',0,'active');
     INSERT INTO notification_preferences VALUES (1,'transactional',1,1,'Asia/Kolkata'),(1,'reminder',0,1,'Asia/Kolkata'),(2,'transactional',1,1,'Asia/Kolkata');
     INSERT INTO data_consents(profile_id,purpose,consent_status) VALUES (1,'health_reminders','granted');
