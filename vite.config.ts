@@ -54,6 +54,12 @@ export default defineConfig(async () => {
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),
     },
+    // RSC, SSR and the browser must resolve a single React module identity.
+    // Without this, Vite can load separate React copies for its child
+    // environments and React reports the multiple-renderers context warning.
+    resolve: {
+      dedupe: ["react", "react-dom", "react-server-dom-webpack"],
+    },
     plugins: [
       vinext(),
       sites(),
