@@ -17,7 +17,7 @@ import { enforceRateLimit } from "../../../../../lib/abuse-controls";
 const allowedStatuses = new Set(["confirmed", "packed", "ready_for_pickup", "picked_up", "out_for_delivery", "delivered", "cancelled"]);
 
 type WorkflowOrder = {
-  id: number; orderNumber: string; vendorId: number; customerProfileId: number;
+  id: number; orderNumber: string; vendorId: number; branchId: number | null; customerProfileId: number;
   prescriptionStatus: string; paymentMethod: string; paymentStatus: string; deliveryMethod: DeliveryMethod;
   orderStatus: string; deliveryStatus: string;
 };
@@ -37,14 +37,14 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       : null;
     const orderId = Number((await context.params).id);
     if (!Number.isInteger(orderId)) return privateJson({ error: "Order is invalid" }, { status: 400 });
-    const order = await getD1().prepare("SELECT id, customer_profile_id AS customerProfileId, vendor_id AS vendorId, delivery_method AS deliveryMethod FROM orders WHERE id = ?")
-      .bind(orderId).first<{ id: number; customerProfileId: number; vendorId: number; deliveryMethod: string }>();
+    const order = await getD1().prepare("SELECT id, customer_profile_id AS customerProfileId, vendor_id AS vendorId, branch_id AS branchId, delivery_method AS deliveryMethod FROM orders WHERE id = ?")
+      .bind(orderId).first<{ id: number; customerProfileId: number; vendorId: number; branchId: number | null; deliveryMethod: string }>();
     if (!order) return privateJson({ error: "Order not found" }, { status: 404 });
     const assigned = profile.role === "delivery" ? await getD1().prepare(`SELECT a.id FROM delivery_assignments a
       JOIN delivery_agents agent ON agent.id=a.agent_id WHERE a.order_id=? AND agent.profile_id=?
         AND a.status NOT IN ('cancelled') ORDER BY a.id DESC LIMIT 1`).bind(orderId,profile.id).first<{id:number}>() : null;
     const allowed = profile.role === "admin" || order.customerProfileId === profile.id
-      || (profile.role === "vendor" && order.vendorId === vendorAccess?.vendorId)
+      || (profile.role === "vendor" && order.vendorId === vendorAccess?.vendorId && (vendorAccess.branchId === null || order.branchId === vendorAccess.branchId))
       || (profile.role === "delivery" && order.deliveryMethod === "urmed" && Boolean(assigned));
     if (!allowed) return privateJson({ error: "Order not found" }, { status: 404 });
     const events = await getD1().prepare(`SELECT e.status, e.note, e.latitude, e.longitude, e.created_at AS createdAt,
@@ -74,14 +74,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!Number.isInteger(orderId) || !allowedStatuses.has(status)) return privateJson({ error: "Tracking update is invalid" }, { status: 400 });
     const db = getD1();
     const order = await db.prepare(`SELECT o.id, o.order_number AS orderNumber, o.vendor_id AS vendorId,
-      o.customer_profile_id AS customerProfileId,
+      o.customer_profile_id AS customerProfileId, o.branch_id AS branchId,
       o.prescription_status AS prescriptionStatus, o.payment_method AS paymentMethod,
       o.payment_status AS paymentStatus, o.delivery_method AS deliveryMethod,
       o.order_status AS orderStatus, o.delivery_status AS deliveryStatus
       FROM orders o WHERE o.id = ?`)
       .bind(orderId).first<WorkflowOrder>();
     if (!order || (profile.role === "customer" && order.customerProfileId !== profile.id)
-      || (profile.role === "vendor" && order.vendorId !== vendorAccess?.vendorId)
+      || (profile.role === "vendor" && (order.vendorId !== vendorAccess?.vendorId || (vendorAccess.branchId !== null && order.branchId !== vendorAccess.branchId)))
       || (profile.role === "delivery" && order.deliveryMethod !== "urmed")) {
       return privateJson({ error: "Order not found" }, { status: 404 });
     }

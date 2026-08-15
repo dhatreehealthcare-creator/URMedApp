@@ -172,6 +172,7 @@ export async function loadAdminStockReport(database: D1Database, url: URL) {
   const direction = choice(parameters.get("direction"), ["asc", "desc"] as const, "asc");
   const sort = choice(parameters.get("sort"), ["medicine", "manufacturer", "physical", "available", "value", "expiry"] as const, groupBy === "medicine" ? "medicine" : "manufacturer");
   const vendorId = optionalInteger(parameters.get("vendorId"), 1, 1_000_000_000);
+  const branchId = optionalInteger(parameters.get("branchId"), 1, 1_000_000_000);
   const query = boundedText(parameters.get("q"), 100);
   const search = like(query);
   const groupKey = groupBy === "medicine"
@@ -220,12 +221,12 @@ export async function loadAdminStockReport(database: D1Database, url: URL) {
     FROM pharmacy_inventory i JOIN products p ON p.id=i.product_id
     LEFT JOIN manufacturers m ON m.id=p.manufacturer_id
     JOIN vendors v ON v.id=i.vendor_id
-    WHERE i.active=1 AND (? IS NULL OR i.vendor_id=?)
+    WHERE i.active=1 AND (? IS NULL OR i.vendor_id=?) AND (? IS NULL OR i.branch_id=?)
       AND (?='' OR lower(p.name) LIKE ? ESCAPE '\\' OR lower(COALESCE(m.name,p.manufacturer,'')) LIKE ? ESCAPE '\\'
         OR lower(v.business_name) LIKE ? ESCAPE '\\')
     GROUP BY ${groupColumns}
   ), filtered AS (SELECT * FROM grouped WHERE ${statePredicate[stockState]})`;
-  const binds = [vendorId, vendorId, query, search, search, search];
+  const binds = [vendorId, vendorId, branchId, branchId, query, search, search, search];
   const [rowsResult, summary] = await Promise.all([
     database.prepare(`${common} SELECT * FROM filtered ORDER BY ${sortExpression[sort]} ${direction.toUpperCase()}, groupKey LIMIT ? OFFSET ?`)
       .bind(...binds, pageSize, (page - 1) * pageSize).all<StockRow>(),
@@ -258,6 +259,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
   const sort = choice(parameters.get("sort"), ["date", "medicine", "gross", "returns", "net", "quantity"] as const, groupBy === "date" ? "date" : "medicine");
   const direction = choice(parameters.get("direction"), ["asc", "desc"] as const, sort === "date" ? "desc" : "asc");
   const vendorId = optionalInteger(parameters.get("vendorId"), 1, 1_000_000_000);
+  const branchId = optionalInteger(parameters.get("branchId"), 1, 1_000_000_000);
   const query = boundedText(parameters.get("q"), 100);
   const search = like(query);
   const groupKey = groupBy === "date" ? "activityDate" : "CAST(productId AS TEXT)";
@@ -275,7 +277,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
     quantity: "soldQuantity-returnedQuantity",
   };
   const common = `WITH activity AS (
-    SELECT invoice.issued_at AS activityAt,date(invoice.issued_at) AS activityDate,'online' AS channel,o.vendor_id AS vendorId,
+    SELECT invoice.issued_at AS activityAt,date(invoice.issued_at) AS activityDate,'online' AS channel,o.vendor_id AS vendorId,o.branch_id AS branchId,
       item.product_id AS productId,p.name AS medicineName,
       COALESCE(m.name,NULLIF(trim(p.manufacturer),''),'Unknown manufacturer') AS manufacturerName,
       'online:'||o.id AS saleKey,'' AS returnKey,item.quantity AS soldQuantity,0 AS returnedQuantity,
@@ -285,14 +287,14 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
     JOIN tax_invoices invoice ON invoice.source_type='online_order' AND invoice.source_id=o.id
     WHERE o.order_status='completed'
     UNION ALL
-    SELECT event.created_at,date(event.created_at),'offline',sale.vendor_id,item.product_id,p.name,
+    SELECT event.created_at,date(event.created_at),'offline',sale.vendor_id,sale.branch_id,item.product_id,p.name,
       COALESCE(m.name,NULLIF(trim(p.manufacturer),''),'Unknown manufacturer'),
       'offline:'||sale.id,'',item.quantity,0,item.line_total_paise,0
     FROM offline_sales sale JOIN offline_sale_events event ON event.offline_sale_id=sale.id AND event.event_type='completed'
     JOIN offline_sale_items item ON item.offline_sale_id=sale.id JOIN products p ON p.id=item.product_id
     LEFT JOIN manufacturers m ON m.id=p.manufacturer_id
     UNION ALL
-    SELECT return_record.created_at,date(return_record.created_at),return_record.source_type,return_record.vendor_id,
+    SELECT return_record.created_at,date(return_record.created_at),return_record.source_type,return_record.vendor_id,inventory.branch_id,
       inventory.product_id,p.name,COALESCE(m.name,NULLIF(trim(p.manufacturer),''),'Unknown manufacturer'),
       '',return_record.source_type||':'||return_record.id,0,return_item.quantity,0,return_item.amount_paise
     FROM sales_returns return_record JOIN sales_return_items return_item ON return_item.sales_return_id=return_record.id
@@ -301,7 +303,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
     WHERE return_record.status='completed' AND return_record.source_type IN ('online','offline')
   ), filtered AS (
     SELECT * FROM activity WHERE activityAt >= ? AND activityAt < ? AND (?='all' OR channel=?)
-      AND (? IS NULL OR vendorId=?) AND (?='' OR lower(medicineName) LIKE ? ESCAPE '\\'
+      AND (? IS NULL OR vendorId=?) AND (? IS NULL OR branchId=?) AND (?='' OR lower(medicineName) LIKE ? ESCAPE '\\'
         OR lower(manufacturerName) LIKE ? ESCAPE '\\')
   ), grouped AS (
     SELECT ${groupKey}||':'||channel AS groupKey,${selectedDate} AS activityDate,channel,
@@ -312,7 +314,7 @@ export async function loadAdminSalesReport(database: D1Database, url: URL) {
       SUM(grossSalesPaise)-SUM(returnedPaise) AS netSalesPaise
     FROM filtered GROUP BY ${groupedBy}
   )`;
-  const binds = [timestamps.from, timestamps.to, channel, channel, vendorId, vendorId, query, search, search];
+  const binds = [timestamps.from, timestamps.to, channel, channel, vendorId, vendorId, branchId, branchId, query, search, search];
   const [rowsResult, summary] = await Promise.all([
     database.prepare(`${common} SELECT * FROM grouped ORDER BY ${sortExpression[sort]} ${direction.toUpperCase()},channel,groupKey LIMIT ? OFFSET ?`)
       .bind(...binds, pageSize, (page - 1) * pageSize).all<SalesRow>(),
@@ -392,7 +394,7 @@ export async function loadAdminExpenseReport(database: D1Database, url: URL) {
 }
 
 type DeliveryCandidate = {
-  orderId: number; orderNumber: string; vendorId: number; businessName: string; deliveryMethod: "pharmacy" | "urmed";
+  orderId: number; orderNumber: string; vendorId: number; branchId: number | null; businessName: string; deliveryMethod: "pharmacy" | "urmed";
   deliveryStatus: string; paymentMethod: "online" | "cod"; paymentStatus: string; deliveryFeePaise: number;
   orderTotalPaise: number; createdAt: string; riderName: string; assignmentStatus: string;
   assignedAt: string | null; pickedUpAt: string | null; deliveredAt: string | null;
@@ -436,6 +438,7 @@ export async function loadAdminDeliveryReport(database: D1Database, url: URL, no
   const sort = choice(parameters.get("sort"), ["date", "store", "status", "fee", "distance", "sla"] as const, "date");
   const direction = choice(parameters.get("direction"), ["asc", "desc"] as const, sort === "store" || sort === "status" ? "asc" : "desc");
   const vendorId = optionalInteger(parameters.get("vendorId"), 1, 1_000_000_000);
+  const branchId = optionalInteger(parameters.get("branchId"), 1, 1_000_000_000);
   const minDistanceKm = optionalInteger(parameters.get("minDistanceKm"), 0, 1_000);
   const maxDistanceKm = optionalInteger(parameters.get("maxDistanceKm"), 0, 1_000);
   const minFeePaise = optionalInteger(parameters.get("minFeePaise"), 0, 100_000_000);
@@ -445,7 +448,7 @@ export async function loadAdminDeliveryReport(database: D1Database, url: URL, no
   if (minFeePaise !== null && maxFeePaise !== null && minFeePaise > maxFeePaise) throw new AdminReportError("Minimum fee cannot exceed maximum fee");
   const query = boundedText(parameters.get("q"), 100);
   const search = like(query);
-  const candidates = await database.prepare(`SELECT o.id AS orderId,o.order_number AS orderNumber,o.vendor_id AS vendorId,
+  const candidates = await database.prepare(`SELECT o.id AS orderId,o.order_number AS orderNumber,o.vendor_id AS vendorId,o.branch_id AS branchId,
     v.business_name AS businessName,o.delivery_method AS deliveryMethod,o.delivery_status AS deliveryStatus,
     o.payment_method AS paymentMethod,o.payment_status AS paymentStatus,o.delivery_fee_paise AS deliveryFeePaise,
     o.total_paise AS orderTotalPaise,o.created_at AS createdAt,COALESCE(rider_profile.name,'') AS riderName,
@@ -464,12 +467,12 @@ export async function loadAdminDeliveryReport(database: D1Database, url: URL, no
     LEFT JOIN delivery_agents agent ON agent.id=assignment.agent_id
     LEFT JOIN account_profiles rider_profile ON rider_profile.id=agent.profile_id
     WHERE o.delivery_method IN ('pharmacy','urmed') AND o.created_at >= ? AND o.created_at < ?
-      AND (? IS NULL OR o.vendor_id=?) AND (?='all' OR o.delivery_method=?)
+      AND (? IS NULL OR o.vendor_id=?) AND (? IS NULL OR o.branch_id=?) AND (?='all' OR o.delivery_method=?)
       AND (?='all' OR o.delivery_status=?)
       AND (?='' OR lower(o.order_number) LIKE ? ESCAPE '\\' OR lower(v.business_name) LIKE ? ESCAPE '\\'
         OR lower(COALESCE(rider_profile.name,'')) LIKE ? ESCAPE '\\')
     ORDER BY o.created_at DESC,o.id DESC LIMIT ${REPORT_QUERY_MAX_ROWS + 1}`)
-    .bind(timestamps.from, timestamps.to, vendorId, vendorId, method, method, status, status, query, search, search, search)
+    .bind(timestamps.from, timestamps.to, vendorId, vendorId, branchId, branchId, method, method, status, status, query, search, search, search)
     .all<DeliveryCandidate>();
   if (candidates.results.length > REPORT_QUERY_MAX_ROWS) {
     throw new AdminReportError(`This delivery report contains more than ${REPORT_QUERY_MAX_ROWS.toLocaleString()} candidate rows; narrow the date range or filters`, 422);

@@ -18,8 +18,16 @@ function respondToPosError(error: unknown) {
 
 export async function GET(request: Request) {
   try {
-    const { vendorId } = await requireVendorPermission(request, "sale.write");
+    const { vendorId, branchId: staffBranchId } = await requireVendorPermission(request, "sale.write");
     const url = new URL(request.url);
+    const requestedBranchId = url.searchParams.get("branchId");
+    if (requestedBranchId !== null && (!/^\d+$/.test(requestedBranchId) || Number(requestedBranchId) < 1)) {
+      return Response.json({ error: "Branch is invalid" }, { status: 400, headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (staffBranchId !== null && requestedBranchId !== null && Number(requestedBranchId) !== staffBranchId) {
+      return Response.json({ error: "Your staff access is limited to another pharmacy branch" }, { status: 403, headers: { "Cache-Control": "private, no-store" } });
+    }
+    const effectiveBranchId = staffBranchId ?? (requestedBranchId === null ? null : Number(requestedBranchId));
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase().replace(/[%_]/g, "").slice(0, 100);
     const page = boundedInteger(url.searchParams.get("page"), 1, 1, 100_000);
     const pageSize = boundedInteger(url.searchParams.get("pageSize"), 20, 5, 50);
@@ -32,10 +40,10 @@ export async function GET(request: Request) {
       FROM offline_sales sale
       JOIN offline_sale_events event ON event.offline_sale_id = sale.id AND event.event_type = 'completed'
       JOIN tax_invoices invoice ON invoice.source_type = 'offline_sale' AND invoice.source_id = sale.id
-      WHERE sale.vendor_id = ? AND (? = '' OR lower(sale.sale_number) LIKE ?
+      WHERE sale.vendor_id = ? AND (? IS NULL OR sale.branch_id = ?) AND (? = '' OR lower(sale.sale_number) LIKE ?
         OR lower(sale.customer_name) LIKE ? OR sale.customer_phone LIKE ? OR lower(invoice.invoice_number) LIKE ?)
       ORDER BY sale.created_at DESC, sale.id DESC LIMIT ? OFFSET ?
-    `).bind(vendorId, query, search, search, search, search, pageSize, (page - 1) * pageSize).all<{
+    `).bind(vendorId, effectiveBranchId, effectiveBranchId, query, search, search, search, search, pageSize, (page - 1) * pageSize).all<{
       id: number; saleNumber: string; invoiceNumber: string; customerName: string; customerPhone: string;
       paymentMode: string; totalPaise: number; createdAt: string; totalCount: number;
     }>();
@@ -55,8 +63,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { profile, vendorId } = await requireVendorPermission(request, "sale.write");
-    const result = await completeOfflineSale({ database: getD1(), vendorId, actorProfileId: profile.id, body: await request.json() });
+    const { profile, vendorId, branchId: staffBranchId } = await requireVendorPermission(request, "sale.write");
+    const body = await request.json() as Record<string, unknown>;
+    const requestedBranchId = body.branchId === undefined ? null : Number(body.branchId);
+    if (requestedBranchId !== null && (!Number.isInteger(requestedBranchId) || requestedBranchId < 1)) {
+      return Response.json({ error: "Branch is invalid" }, { status: 400, headers: { "Cache-Control": "no-store" } });
+    }
+    if (staffBranchId !== null && requestedBranchId !== null && requestedBranchId !== staffBranchId) {
+      return Response.json({ error: "Your staff access is limited to another pharmacy branch" }, { status: 403, headers: { "Cache-Control": "no-store" } });
+    }
+    const result = await completeOfflineSale({
+      database: getD1(), vendorId, actorProfileId: profile.id,
+      body: { ...body, ...(staffBranchId === null ? {} : { branchId: staffBranchId }) },
+    });
     if (!result.replayed) {
       await appendAuditEvent({
         vendorId,

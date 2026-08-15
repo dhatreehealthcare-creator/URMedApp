@@ -11,6 +11,8 @@ import {
 
 type QueueOrderRow = {
   id: number;
+  branchId: number | null;
+  branchName: string | null;
   orderNumber: string;
   customerName: string;
   customerPhone: string;
@@ -48,10 +50,20 @@ type QueueSummary = {
 
 export async function GET(request: Request) {
   try {
-    const { vendorId } = await requireVendorPermission(request, "sale.write");
-    const filters = parseVendorOrderQueueQuery(new URL(request.url));
+    const { vendorId, branchId: staffBranchId } = await requireVendorPermission(request, "sale.write");
+    const requestUrl = new URL(request.url);
+    const requestedBranchId = requestUrl.searchParams.get("branchId");
+    if (requestedBranchId !== null && (!/^\d+$/.test(requestedBranchId) || Number(requestedBranchId) < 1)) {
+      return Response.json({ error: "Branch is invalid" }, { status: 400, headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (staffBranchId !== null && requestedBranchId !== null && Number(requestedBranchId) !== staffBranchId) {
+      return Response.json({ error: "Your staff access is limited to another pharmacy branch" }, { status: 403, headers: { "Cache-Control": "private, no-store" } });
+    }
+    const effectiveBranchId = staffBranchId ?? (requestedBranchId === null ? null : Number(requestedBranchId));
+    const filters = parseVendorOrderQueueQuery(requestUrl);
     const basePredicates = ["o.vendor_id = ?", "o.order_type = 'online'"];
     const baseBindings: Array<string | number> = [vendorId];
+    if (effectiveBranchId !== null) { basePredicates.push("o.branch_id = ?"); baseBindings.push(effectiveBranchId); }
 
     if (filters.query) {
       basePredicates.push(`(
@@ -82,7 +94,7 @@ export async function GET(request: Request) {
       db.prepare(`SELECT COUNT(*) AS count FROM orders o WHERE ${filteredWhere}`)
         .bind(...baseBindings).first<{ count: number }>(),
       db.prepare(`
-        SELECT o.id, o.order_number AS orderNumber, o.customer_name AS customerName,
+        SELECT o.id, o.branch_id AS branchId, branch.name AS branchName, o.order_number AS orderNumber, o.customer_name AS customerName,
           o.customer_phone AS customerPhone, o.subtotal_paise AS subtotalPaise,
           o.tax_paise AS taxPaise, o.delivery_fee_paise AS deliveryFeePaise,
           o.total_paise AS totalPaise, o.payment_method AS paymentMethod,
@@ -97,7 +109,7 @@ export async function GET(request: Request) {
           (SELECT group_concat(item.product_name || ' × ' || item.quantity, ', ')
             FROM order_items item WHERE item.order_id = o.id
           ) AS itemPreview
-        FROM orders o
+        FROM orders o LEFT JOIN pharmacy_branches branch ON branch.id = o.branch_id AND branch.vendor_id = o.vendor_id
         WHERE ${filteredWhere}
         ORDER BY ${vendorOrderSortExpression(filters.sort)}
         LIMIT ? OFFSET ?

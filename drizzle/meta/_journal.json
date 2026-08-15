@@ -449,6 +449,20 @@
       "when": 1786599000000,
       "tag": "0063_operational_monitoring",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": 6,
+      "when": 1786600000000,
+      "tag": "0064_pharmacy_branches",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": 6,
+      "when": 1786601000000,
+      "tag": "0065_branch_scoped_fefo_guards",
+      "breakpoints": true
     }
   ]
 }

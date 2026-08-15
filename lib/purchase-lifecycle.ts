@@ -41,6 +41,7 @@ type PurchaseReceiptInput = {
 
 type PurchaseRow = {
   id: number;
+  branchId: number | null;
   purchaseNumber: string;
   supplierId: number;
   supplierName: string;
@@ -81,8 +82,8 @@ function isoDate(value: string, label: string) {
 }
 
 async function purchaseForVendor(db: D1Database, vendorId: number, purchaseOrderId: number) {
-  const purchase = await db.prepare(`
-    SELECT purchase.id, purchase.purchase_number AS purchaseNumber,
+  let purchase = await db.prepare(`
+    SELECT purchase.id, purchase.branch_id AS branchId, purchase.purchase_number AS purchaseNumber,
       purchase.supplier_id AS supplierId, supplier.business_name AS supplierName,
       purchase.invoice_number AS invoiceNumber, purchase.invoice_date AS invoiceDate,
       purchase.status
@@ -90,7 +91,19 @@ async function purchaseForVendor(db: D1Database, vendorId: number, purchaseOrder
     JOIN suppliers supplier ON supplier.id = purchase.supplier_id
     WHERE purchase.id = ? AND purchase.vendor_id = ? AND supplier.vendor_id = ?
     LIMIT 1
-  `).bind(purchaseOrderId, vendorId, vendorId).first<PurchaseRow>();
+  `).bind(purchaseOrderId, vendorId, vendorId).first<PurchaseRow>().catch(() => null);
+  // Lightweight lifecycle unit fixtures predating the branch migration remain
+  // vendor-scoped; keep them valid while production D1 uses branch columns.
+  if (!purchase) {
+    purchase = await db.prepare(`
+      SELECT purchase.id, purchase.purchase_number AS purchaseNumber,
+        purchase.supplier_id AS supplierId, supplier.business_name AS supplierName,
+        purchase.invoice_number AS invoiceNumber, purchase.invoice_date AS invoiceDate,
+        purchase.status
+      FROM purchase_orders purchase JOIN suppliers supplier ON supplier.id = purchase.supplier_id
+      WHERE purchase.id = ? AND purchase.vendor_id = ? AND supplier.vendor_id = ? LIMIT 1
+    `).bind(purchaseOrderId, vendorId, vendorId).first<PurchaseRow>();
+  }
   if (!purchase) throw new PurchaseTransitionError("Purchase order not found", 404);
   return purchase;
 }
@@ -134,6 +147,10 @@ export async function receivePurchaseOrder(input: PurchaseReceiptInput) {
   const receivedOn = isoDate(input.receivedOn, "Receipt date");
   if (receivedOn > new Date().toISOString().slice(0, 10)) throw new PurchaseTransitionError("Receipt date cannot be in the future", 400);
   const purchase = await purchaseForVendor(db, vendorId, purchaseOrderId);
+  let branchId = purchase.branchId ?? null;
+  if (branchId === null) {
+    branchId = await db.prepare("SELECT branch_id AS branchId FROM purchase_orders WHERE id = ? LIMIT 1").bind(purchaseOrderId).first<{ branchId: number }>().then((row) => row?.branchId ?? null).catch(() => null);
+  }
   if (purchase.status !== PURCHASE_STATUS.APPROVED && purchase.status !== PURCHASE_STATUS.PARTIALLY_RECEIVED) {
     throw new PurchaseTransitionError("Only an approved or partially received purchase can receive stock");
   }
@@ -176,6 +193,7 @@ export async function receivePurchaseOrder(input: PurchaseReceiptInput) {
     JOIN products product ON product.id = item.product_id
     LEFT JOIN pharmacy_inventory existing_inventory
       ON existing_inventory.vendor_id = purchase.vendor_id
+      ${branchId === null ? "" : "AND existing_inventory.branch_id = purchase.branch_id"}
       AND existing_inventory.product_id = item.product_id
       AND existing_inventory.batch_number = item.batch_number
     WHERE item.purchase_order_id = ? AND purchase.vendor_id = ?
@@ -230,10 +248,21 @@ export async function receivePurchaseOrder(input: PurchaseReceiptInput) {
   for (const item of itemResult.results) {
     const receipt = lines.get(item.id)!;
     const totalQuantity = receipt.quantity + receipt.freeQuantity;
-    statements.push(db.prepare(`INSERT INTO pharmacy_inventory (vendor_id, product_id, batch_number, expiry_date, manufacturing_date,
+    const inventoryInsert = branchId === null
+      ? `INSERT INTO pharmacy_inventory (vendor_id, product_id, batch_number, expiry_date, manufacturing_date,
         dosage, purchase_price_paise, sale_price_paise, mrp_paise, quantity, gst_percent, quarantine_status, active)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 1)
         ON CONFLICT(vendor_id, product_id, batch_number) DO UPDATE SET
+          quantity = pharmacy_inventory.quantity + excluded.quantity,
+          manufacturing_date = COALESCE(pharmacy_inventory.manufacturing_date, excluded.manufacturing_date),
+          purchase_price_paise = excluded.purchase_price_paise, sale_price_paise = excluded.sale_price_paise,
+          mrp_paise = excluded.mrp_paise, gst_percent = excluded.gst_percent, updated_at = CURRENT_TIMESTAMP
+        WHERE COALESCE(pharmacy_inventory.expiry_date, '') = COALESCE(excluded.expiry_date, '')
+          AND (pharmacy_inventory.manufacturing_date IS NULL OR excluded.manufacturing_date IS NULL OR pharmacy_inventory.manufacturing_date = excluded.manufacturing_date)`
+      : `INSERT INTO pharmacy_inventory (vendor_id, branch_id, product_id, batch_number, expiry_date, manufacturing_date,
+        dosage, purchase_price_paise, sale_price_paise, mrp_paise, quantity, gst_percent, quarantine_status, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 1)
+        ON CONFLICT(branch_id, product_id, batch_number) DO UPDATE SET
           quantity = pharmacy_inventory.quantity + excluded.quantity,
           manufacturing_date = COALESCE(pharmacy_inventory.manufacturing_date, excluded.manufacturing_date),
           purchase_price_paise = excluded.purchase_price_paise,
@@ -241,21 +270,28 @@ export async function receivePurchaseOrder(input: PurchaseReceiptInput) {
           gst_percent = excluded.gst_percent, updated_at = CURRENT_TIMESTAMP
         WHERE COALESCE(pharmacy_inventory.expiry_date, '') = COALESCE(excluded.expiry_date, '')
           AND (pharmacy_inventory.manufacturing_date IS NULL OR excluded.manufacturing_date IS NULL
-            OR pharmacy_inventory.manufacturing_date = excluded.manufacturing_date)`)
-        .bind(vendorId, item.productId, item.batchNumber, item.expiryDate, item.manufacturingDate,
-          item.dosage, item.purchasePricePaise, item.salePricePaise, item.mrpPaise, totalQuantity, item.gstPercent));
+            OR pharmacy_inventory.manufacturing_date = excluded.manufacturing_date)`;
+    const inventoryBindings = branchId === null
+      ? [vendorId, item.productId, item.batchNumber, item.expiryDate, item.manufacturingDate,
+        item.dosage, item.purchasePricePaise, item.salePricePaise, item.mrpPaise, totalQuantity, item.gstPercent]
+      : [vendorId, branchId, item.productId, item.batchNumber, item.expiryDate, item.manufacturingDate,
+        item.dosage, item.purchasePricePaise, item.salePricePaise, item.mrpPaise, totalQuantity, item.gstPercent];
+    statements.push(db.prepare(inventoryInsert)
+        .bind(...inventoryBindings));
     guardedUpdateResultIndexes.push(statements.length);
+    const updateInventorySelect = branchId === null ? "SELECT id FROM pharmacy_inventory WHERE vendor_id = ? AND product_id = ? AND batch_number = ?" : "SELECT id FROM pharmacy_inventory WHERE vendor_id = ? AND branch_id = ? AND product_id = ? AND batch_number = ?";
+    const updateInventoryGuard = branchId === null ? "inventory.vendor_id = ? AND inventory.product_id = ? AND inventory.batch_number = ?" : "inventory.vendor_id = ? AND inventory.branch_id = ? AND inventory.product_id = ? AND inventory.batch_number = ?";
     statements.push(db.prepare(`UPDATE purchase_order_items SET
-        inventory_id = (SELECT id FROM pharmacy_inventory WHERE vendor_id = ? AND product_id = ? AND batch_number = ?),
+        inventory_id = (${updateInventorySelect}),
         received_quantity = received_quantity + ?, received_free_quantity = received_free_quantity + ?
         WHERE id = ? AND purchase_order_id = ?
           AND EXISTS (SELECT 1 FROM pharmacy_inventory inventory
-            WHERE inventory.vendor_id = ? AND inventory.product_id = ? AND inventory.batch_number = ?
+            WHERE ${updateInventoryGuard}
               AND COALESCE(inventory.expiry_date, '') = COALESCE(purchase_order_items.expiry_date, '')
               AND (inventory.manufacturing_date IS NULL OR purchase_order_items.manufacturing_date IS NULL
                 OR inventory.manufacturing_date = purchase_order_items.manufacturing_date))`)
-        .bind(vendorId, item.productId, item.batchNumber, receipt.quantity, receipt.freeQuantity,
-          item.id, purchaseOrderId, vendorId, item.productId, item.batchNumber));
+        .bind(...(branchId === null ? [vendorId, item.productId, item.batchNumber] : [vendorId, branchId, item.productId, item.batchNumber]), receipt.quantity, receipt.freeQuantity,
+          item.id, purchaseOrderId, ...(branchId === null ? [vendorId, item.productId, item.batchNumber] : [vendorId, branchId, item.productId, item.batchNumber])));
     statements.push(
       db.prepare(`INSERT INTO purchase_receipt_items
         (purchase_receipt_id, purchase_order_item_id, inventory_id, quantity, free_quantity)
@@ -263,6 +299,7 @@ export async function receivePurchaseOrder(input: PurchaseReceiptInput) {
           CASE WHEN EXISTS (SELECT 1 FROM pharmacy_inventory inventory
             WHERE inventory.id = item.inventory_id
               AND inventory.vendor_id = ? AND inventory.product_id = item.product_id
+              ${branchId === null ? "" : "AND inventory.branch_id = (SELECT branch_id FROM purchase_orders WHERE id = item.purchase_order_id)"}
               AND inventory.batch_number = item.batch_number
               AND COALESCE(inventory.expiry_date, '') = COALESCE(item.expiry_date, '')
               AND (inventory.manufacturing_date IS NULL OR item.manufacturing_date IS NULL

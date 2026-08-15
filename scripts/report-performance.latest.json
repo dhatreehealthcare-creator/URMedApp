@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-14T03:36:52.345Z",
+  "generatedAt": "2026-08-15T03:48:46.255Z",
   "methodology": {
     "engine": "SQLite node:sqlite in-memory",
     "tenantId": 2,
@@ -24,23 +24,23 @@
   "scales": {
     "10000": {
       "datasetRowsPerEntity": 10000,
-      "loadMs": 147.67,
+      "loadMs": 90.51,
       "exportCap": 5000,
       "reports": {
         "stock": {
           "name": "stock",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 1.45,
+            "elapsedMs": 0.9,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 1.18,
+            "elapsedMs": 0.78,
             "rows": 0
           },
           "total": {
             "rows": 125,
-            "elapsedMs": 0.9
+            "elapsedMs": 0.65
           },
           "plan": [
             "SEARCH i USING INDEX pharmacy_inventory_vendor_idx (vendor_id=? AND active=?)",
@@ -59,16 +59,16 @@
           "name": "sales",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 4.45,
+            "elapsedMs": 2.66,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 4.19,
+            "elapsedMs": 2.57,
             "rows": 0
           },
           "total": {
             "rows": 365,
-            "elapsedMs": 3.69
+            "elapsedMs": 2.32
           },
           "plan": [
             "SEARCH invoice USING COVERING INDEX tax_invoices_source_date_idx (source_type=?)",
@@ -87,16 +87,16 @@
           "name": "expenses",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 1.27,
+            "elapsedMs": 0.79,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 1.36,
+            "elapsedMs": 0.85,
             "rows": 0
           },
           "total": {
             "rows": 1092,
-            "elapsedMs": 1.03
+            "elapsedMs": 0.66
           },
           "plan": [
             "SEARCH e USING INDEX expenses_vendor_date_idx (vendor_id=? AND expense_date>? AND expense_date<?)",
@@ -114,16 +114,16 @@
           "name": "home_delivery",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 0.24,
+            "elapsedMs": 0.15,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 0.51,
+            "elapsedMs": 0.26,
             "rows": 0
           },
           "total": {
             "rows": 1250,
-            "elapsedMs": 0.47
+            "elapsedMs": 0.27
           },
           "plan": [
             "SEARCH o USING INDEX orders_vendor_delivery_date_idx (vendor_id=? AND delivery_method=? AND created_at>? AND created_at<?)",
@@ -147,23 +147,23 @@
     },
     "100000": {
       "datasetRowsPerEntity": 100000,
-      "loadMs": 1887.44,
+      "loadMs": 1178.55,
       "exportCap": 5000,
       "reports": {
         "stock": {
           "name": "stock",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 14.15,
+            "elapsedMs": 9.02,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 13.46,
+            "elapsedMs": 8.45,
             "rows": 0
           },
           "total": {
             "rows": 125,
-            "elapsedMs": 10.05
+            "elapsedMs": 6.09
           },
           "plan": [
             "SEARCH i USING INDEX pharmacy_inventory_vendor_idx (vendor_id=? AND active=?)",
@@ -182,16 +182,16 @@
           "name": "sales",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 58.74,
+            "elapsedMs": 36.8,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 59.17,
+            "elapsedMs": 36.77,
             "rows": 0
           },
           "total": {
             "rows": 365,
-            "elapsedMs": 52.77
+            "elapsedMs": 32.6
           },
           "plan": [
             "SEARCH invoice USING COVERING INDEX tax_invoices_source_date_idx (source_type=?)",
@@ -210,16 +210,16 @@
           "name": "expenses",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 11.45,
+            "elapsedMs": 6.92,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 10.98,
+            "elapsedMs": 6.8,
             "rows": 0
           },
           "total": {
             "rows": 1092,
-            "elapsedMs": 10.02
+            "elapsedMs": 6.3
           },
           "plan": [
             "SEARCH e USING INDEX expenses_vendor_date_idx (vendor_id=? AND expense_date>? AND expense_date<?)",
@@ -237,16 +237,16 @@
           "name": "home_delivery",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 0.34,
+            "elapsedMs": 0.23,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 4.85,
+            "elapsedMs": 2.96,
             "rows": 100
           },
           "total": {
             "rows": 12500,
-            "elapsedMs": 5.36
+            "elapsedMs": 3.24
           },
           "plan": [
             "SEARCH o USING INDEX orders_vendor_delivery_date_idx (vendor_id=? AND delivery_method=? AND created_at>? AND created_at<?)",
@@ -270,23 +270,23 @@
     },
     "1000000": {
       "datasetRowsPerEntity": 1000000,
-      "loadMs": 23170.31,
+      "loadMs": 14809.57,
       "exportCap": 5000,
       "reports": {
         "stock": {
           "name": "stock",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 189.58,
+            "elapsedMs": 122.62,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 188.56,
+            "elapsedMs": 124.75,
             "rows": 0
           },
           "total": {
             "rows": 125,
-            "elapsedMs": 138.48
+            "elapsedMs": 96.58
           },
           "plan": [
             "SEARCH i USING INDEX pharmacy_inventory_vendor_idx (vendor_id=? AND active=?)",
@@ -305,16 +305,16 @@
           "name": "sales",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 939.13,
+            "elapsedMs": 676.15,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 951.61,
+            "elapsedMs": 678.78,
             "rows": 0
           },
           "total": {
             "rows": 365,
-            "elapsedMs": 798.86
+            "elapsedMs": 551.28
           },
           "plan": [
             "SEARCH invoice USING COVERING INDEX tax_invoices_source_date_idx (source_type=?)",
@@ -333,16 +333,16 @@
           "name": "expenses",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 158.04,
+            "elapsedMs": 101.64,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 156.61,
+            "elapsedMs": 103.31,
             "rows": 0
           },
           "total": {
             "rows": 1092,
-            "elapsedMs": 148.04
+            "elapsedMs": 99.05
           },
           "plan": [
             "SEARCH e USING INDEX expenses_vendor_date_idx (vendor_id=? AND expense_date>? AND expense_date<?)",
@@ -360,16 +360,16 @@
           "name": "home_delivery",
           "tenantId": 2,
           "page1": {
-            "elapsedMs": 0.38,
+            "elapsedMs": 0.26,
             "rows": 100
           },
           "page100": {
-            "elapsedMs": 8.82,
+            "elapsedMs": 5.82,
             "rows": 100
           },
           "total": {
             "rows": 125000,
-            "elapsedMs": 84.25
+            "elapsedMs": 54.9
           },
           "plan": [
             "SEARCH o USING INDEX orders_vendor_delivery_date_idx (vendor_id=? AND delivery_method=? AND created_at>? AND created_at<?)",

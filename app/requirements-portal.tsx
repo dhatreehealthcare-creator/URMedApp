@@ -28,6 +28,7 @@ import { LiveMarketplace } from "./live-marketplace";
 import { VendorSetup } from "./vendor-setup";
 import { VendorOrderQueue } from "./vendor-order-queue";
 import { VendorPublicLocation } from "./vendor-public-location";
+import { VendorBranchManager } from "./vendor-branch-manager";
 import { VendorNotificationInbox } from "./vendor-notification-inbox";
 import { NotificationPreferences } from "./notification-preferences";
 import { VendorCompliance } from "./vendor-compliance";
@@ -45,6 +46,7 @@ import { AccountingStatements } from "./accounting-statements";
 import { PricingGovernanceCenter } from "./pricing-governance-center";
 import { ReconciliationWorkspace } from "./reconciliation-workspace";
 import { AdminOperationalMonitoring } from "./admin-operational-monitoring";
+import { AdminBranchDirectory } from "./admin-branch-directory";
 import type { CustomerReorderRequest } from "../lib/customer-order-history";
 
 type PortalRole = "vendor" | "customer" | "admin";
@@ -173,7 +175,7 @@ function DatabaseArchitecture() {
 }
 
 function AdminPortal({ section }: { section: AdminSection }) {
-  if (section === "overview") return <div className="portal-stack"><AdminOperationsCenter mode="overview" /><AdminOperationalMonitoring /><RecoveredDataCard /></div>;
+  if (section === "overview") return <div className="portal-stack"><AdminOperationsCenter mode="overview" /><AdminBranchDirectory /><AdminOperationalMonitoring /><RecoveredDataCard /></div>;
   if (section === "architecture") return <DatabaseArchitecture />;
   if (section === "registrations") return <div className="portal-stack"><AdminRegistrationList /><AdminStoreMap /><VendorCompliance /></div>;
   if (section === "categories") return <ProductMaster role="admin" />;
@@ -195,7 +197,7 @@ export function RequirementsPortal({ initialRole, onBack }: { initialRole: Porta
   const roleTitle = role === "vendor" ? "Vendor workspace" : role === "customer" ? "Customer account" : "URMED administration";
   let content: React.ReactNode;
   if (role === "vendor") {
-    content = vendorSection === "overview" ? <div className="portal-stack"><VendorOverview setSection={setVendorSection} /><NotificationPreferences /><LiveMarketplace role="vendor" /></div> : vendorSection === "registration" ? <VendorSetup registrationMode /> : vendorSection === "profile" ? <div className="portal-stack"><VendorSetup /><VendorPublicLocation /></div> : vendorSection === "orders" ? <VendorOrderQueue /> : vendorSection === "sales" ? <VendorOperationsCenter /> : vendorSection === "purchase" ? <ProcurementCenter mode="purchase" /> : vendorSection === "products" ? <div className="portal-stack"><ProductMaster role="vendor" /><PricingGovernanceCenter /></div> : vendorSection === "masters" ? <ProcurementCenter mode="masters" /> : <ReportsView />;
+    content = vendorSection === "overview" ? <div className="portal-stack"><VendorOverview setSection={setVendorSection} /><NotificationPreferences /><LiveMarketplace role="vendor" /></div> : vendorSection === "registration" ? <VendorSetup registrationMode /> : vendorSection === "profile" ? <div className="portal-stack"><VendorSetup /><VendorPublicLocation /><VendorBranchManager /></div> : vendorSection === "orders" ? <VendorOrderQueue /> : vendorSection === "sales" ? <VendorOperationsCenter /> : vendorSection === "purchase" ? <ProcurementCenter mode="purchase" /> : vendorSection === "products" ? <div className="portal-stack"><ProductMaster role="vendor" /><PricingGovernanceCenter /></div> : vendorSection === "masters" ? <ProcurementCenter mode="masters" /> : <ReportsView />;
   } else if (role === "customer") {
     if (customerSection === "orders") content = <LiveMarketplace onReorderPrepared={() => setCustomerReorder(null)} reorderRequest={customerReorder} role="customer" />;
     else if (customerSection === "history") content = <CustomerOrderHistory onReorder={(request) => { setCustomerReorder(request); setCustomerSection("orders"); }} />;

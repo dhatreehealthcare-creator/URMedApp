@@ -17,6 +17,7 @@ export type PosDiscount =
 
 export type PosSaleDraft = {
   idempotencyKey: string;
+  branchId: number | null;
   customerProfileId: number | null;
   customerName: string;
   customerPhone: string;
@@ -178,6 +179,7 @@ export function parsePosSaleDraft(input: unknown): PosSaleDraft {
 
   return {
     idempotencyKey,
+    branchId: optionalPositiveInteger(body.branchId, "Branch"),
     customerProfileId,
     customerName,
     customerPhone,
@@ -518,14 +520,14 @@ export async function completeOfflineSale(input: {
     inventory.quantity AS expectedQuantity, inventory.reserved_quantity AS reservedQuantity,
     inventory.quantity - inventory.reserved_quantity AS availableQuantity
     FROM pharmacy_inventory inventory JOIN products product ON product.id = inventory.product_id
-    WHERE inventory.vendor_id = ? AND inventory.product_id IN (${placeholders})
+    WHERE inventory.vendor_id = ? AND inventory.branch_id = ? AND inventory.product_id IN (${placeholders})
       AND inventory.active = 1 AND inventory.quarantine_status = 'available'
       AND inventory.cold_chain_status IN ('not_applicable','within_range')
       AND inventory.expiry_date IS NOT NULL AND date(inventory.expiry_date) >= date('now')
       AND inventory.quantity - inventory.reserved_quantity > 0
       AND product.active = 1 AND product.governance_status = 'approved'
     ORDER BY inventory.product_id, date(inventory.expiry_date), inventory.id`)
-    .bind(vendorId, ...productIds).all<PosStockBatch>();
+    .bind(vendorId, draft.branchId ?? (await database.prepare("SELECT id FROM pharmacy_branches WHERE vendor_id = ? AND is_primary = 1 LIMIT 1").bind(vendorId).first<{ id: number }>())?.id ?? 0, ...productIds).all<PosStockBatch>();
   const allocations = allocatePosProducts(draft.items, batchesResult.results);
   const requiresPrescription = allocations.some(posProductRequiresPrescription);
 
@@ -568,11 +570,13 @@ export async function completeOfflineSale(input: {
     taxPaise: totals.taxPaise,
     totalPaise: totals.totalPaise,
   });
+  const branchId = draft.branchId ?? (await database.prepare("SELECT id FROM pharmacy_branches WHERE vendor_id = ? AND is_primary = 1 AND status = 'active' LIMIT 1").bind(vendorId).first<{ id: number }>())?.id ?? 0;
+  if (!branchId) throw new OfflinePosError("Select an active pharmacy branch", 409);
   const statements: D1PreparedStatement[] = [
-    database.prepare(`INSERT INTO offline_sales (sale_number,vendor_id,customer_profile_id,customer_name,customer_phone,
+    database.prepare(`INSERT INTO offline_sales (sale_number,vendor_id,branch_id,customer_profile_id,customer_name,customer_phone,
       offline_prescription_id,idempotency_key,request_fingerprint,gross_paise,subtotal_paise,tax_paise,discount_paise,
       cgst_paise,sgst_paise,igst_paise,total_paise,payment_mode,buyer_gstin,place_of_supply_state_code,created_by_profile_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(number, vendorId, draft.customerProfileId,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(number, vendorId, branchId, draft.customerProfileId,
       draft.customerName, draft.customerPhone, draft.prescriptionCaptureId, draft.idempotencyKey, fingerprint,
       totals.grossPaise, totals.subtotalPaise, totals.taxPaise, totals.discountPaise, totals.cgstPaise,
       totals.sgstPaise, totals.igstPaise, totals.totalPaise, draft.paymentMode, draft.buyerGstin,

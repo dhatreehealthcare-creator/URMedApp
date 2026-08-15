@@ -22,7 +22,7 @@ const rolePermissions: Record<string, VendorPermission[]> = {
   delivery_coordinator: ["reports.read"],
 };
 
-type StaffAccess = { staffRole: string; permissionsJson: string };
+type StaffAccess = { staffRole: string; permissionsJson: string; branchId: number | null };
 
 export async function requireVendorOnboardingAccess(request: Request): Promise<{ profile: LocalProfile; vendorId: number }> {
   const { profile } = await requireLocalProfile(request, ["vendor"], { allowIncompleteVendor: true });
@@ -37,7 +37,7 @@ export async function requireVendorPermission(
   request: Request,
   permission: VendorPermission,
   authenticated?: { profile: LocalProfile },
-): Promise<{ profile: LocalProfile; vendorId: number; staffRole: string }> {
+): Promise<{ profile: LocalProfile; vendorId: number; staffRole: string; branchId: number | null }> {
   const { profile } = authenticated ?? await requireLocalProfile(request, ["vendor"]);
   if (profile.role !== "vendor" || profile.status !== "active") {
     throw new Response("This account cannot perform that action", { status: 403 });
@@ -47,9 +47,9 @@ export async function requireVendorPermission(
     throw new Response("Complete verified vendor onboarding and administrator review before using pharmacy operations", { status: 403 });
   }
   const vendor = await getD1().prepare("SELECT profile_id AS profileId FROM vendors WHERE id = ? LIMIT 1").bind(profile.vendorId).first<{ profileId: number | null }>();
-  if (vendor?.profileId === profile.id) return { profile, vendorId: profile.vendorId, staffRole: "owner" };
+  if (vendor?.profileId === profile.id) return { profile, vendorId: profile.vendorId, staffRole: "owner", branchId: null };
   const staff = await getD1().prepare(`
-    SELECT staff_role AS staffRole, permissions_json AS permissionsJson
+    SELECT staff_role AS staffRole, permissions_json AS permissionsJson, branch_id AS branchId
     FROM vendor_staff WHERE vendor_id = ? AND profile_id = ? AND status = 'active' LIMIT 1
   `).bind(profile.vendorId, profile.id).first<StaffAccess>();
   if (!staff) throw new Response("Your pharmacy staff access is inactive", { status: 403 });
@@ -58,5 +58,18 @@ export async function requireVendorPermission(
   if (![...(rolePermissions[staff.staffRole] ?? []), ...extra].includes(permission)) {
     throw new Response("Your pharmacy role cannot perform that action", { status: 403 });
   }
-  return { profile, vendorId: profile.vendorId, staffRole: staff.staffRole };
+  if (staff.branchId !== null) {
+    const branch = await getD1().prepare("SELECT id FROM pharmacy_branches WHERE id = ? AND vendor_id = ? AND status = 'active' LIMIT 1").bind(staff.branchId, profile.vendorId).first<{ id: number }>();
+    if (!branch) throw new Response("Your assigned pharmacy branch is inactive", { status: 403 });
+  }
+  return { profile, vendorId: profile.vendorId, staffRole: staff.staffRole, branchId: staff.branchId ?? null };
+}
+
+export async function requireVendorBranchPermission(request: Request, permission: VendorPermission, branchId: number) {
+  const access = await requireVendorPermission(request, permission);
+  if (!Number.isInteger(branchId) || branchId < 1) throw new Response("Branch is invalid", { status: 400 });
+  if (access.branchId !== null && access.branchId !== branchId) throw new Response("Your staff access is limited to another pharmacy branch", { status: 403 });
+  const branch = await getD1().prepare("SELECT id FROM pharmacy_branches WHERE id = ? AND vendor_id = ? AND status = 'active' LIMIT 1").bind(branchId, access.vendorId).first<{ id: number }>();
+  if (!branch) throw new Response("Branch not found", { status: 404 });
+  return { ...access, branchId };
 }

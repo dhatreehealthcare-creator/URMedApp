@@ -108,6 +108,14 @@ SELECT id, 'P009 Customer Pickup', 'P009 explicitly public pickup point',
 FROM vendors
 WHERE profile_id = (SELECT id FROM account_profiles WHERE auth_user_id = 'test:vendor');
 
+INSERT INTO vendor_public_locations
+  (vendor_id, label, address, latitude, longitude, pickup_enabled, service_enabled,
+   service_radius_km, publication_status, publication_consent_at, published_at)
+SELECT id, 'P009 Other Customer Pickup', 'P009 other explicitly public pickup point',
+  '17.451800', '78.427300', 1, 1, 10, 'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM vendors
+WHERE profile_id = (SELECT id FROM account_profiles WHERE auth_user_id = 'test:vendor-operational-two');
+
 INSERT INTO vendors
   (profile_id, business_name, owner_name, phone, email, registration_status, approval_status, compliance_status)
 SELECT id, name || ' Pharmacy', name, phone, email, 'draft', 'draft', 'pending'
@@ -304,6 +312,17 @@ SELECT 900030, vendor.id, product.id, 'P304-OTC-EARLY', date('now', '+300 day'),
   5, 2, 'available', 'not_applicable', 1
 FROM vendors vendor JOIN products product ON product.legacy_id=900030
 WHERE vendor.profile_id=(SELECT id FROM account_profiles WHERE auth_user_id='test:vendor');
+
+-- Same medicine at a second operational pharmacy for multi-offer ranking tests.
+INSERT INTO pharmacy_inventory
+  (id, vendor_id, product_id, batch_number, expiry_date, manufacturing_date, dosage,
+   purchase_price_paise, sale_price_paise, mrp_paise, quantity, reserved_quantity,
+   gst_percent, reorder_level, quarantine_status, cold_chain_status, active)
+SELECT 900070, vendor.id, product.id, 'P304-OTC-OTHER-VENDOR', date('now', '+450 day'),
+  date('now', '-100 day'), 'Counter second-vendor offer', 650, 950, 1200, 15, 0,
+  5, 2, 'available', 'not_applicable', 1
+FROM vendors vendor JOIN products product ON product.legacy_id=900030
+WHERE vendor.profile_id=(SELECT id FROM account_profiles WHERE auth_user_id='test:vendor-operational-two');
 
 INSERT INTO pharmacy_inventory
   (id, vendor_id, product_id, batch_number, expiry_date, manufacturing_date, dosage,

@@ -36,11 +36,19 @@ function boundedInteger(value: string | null, fallback: number, minimum: number,
 
 export async function GET(request: Request) {
   try {
-    const { vendorId } = await requireVendorPermission(request, "sale.write");
+    const { vendorId, branchId: staffBranchId } = await requireVendorPermission(request, "sale.write");
     const url = new URL(request.url);
     const query = (url.searchParams.get("q") ?? "").trim().toLowerCase().replace(/[%_]/g, "").slice(0, 100);
     const page = boundedInteger(url.searchParams.get("page"), 1, 1, 100_000);
     const pageSize = boundedInteger(url.searchParams.get("pageSize"), 20, 5, 50);
+    const branchId = url.searchParams.get("branchId");
+    if (branchId !== null && (!/^\d+$/.test(branchId) || Number(branchId) < 1)) {
+      return Response.json({ error: "Branch is invalid" }, { status: 400, headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (staffBranchId !== null && branchId !== null && Number(branchId) !== staffBranchId) {
+      return Response.json({ error: "Your staff access is limited to another pharmacy branch" }, { status: 403, headers: { "Cache-Control": "private, no-store" } });
+    }
+    const effectiveBranchId = staffBranchId ?? (branchId === null ? null : Number(branchId));
     const offset = (page - 1) * pageSize;
     const search = `%${query}%`;
     const db = getD1();
@@ -59,7 +67,7 @@ export async function GET(request: Request) {
           MIN(i.expiry_date) AS nextExpiryDate, COUNT(*) AS batchCount,
           group_concat(DISTINCT ${effectivePriceFallbackSql("i", "gst_percent")}) AS gstRates
         FROM products p JOIN pharmacy_inventory i ON i.product_id = p.id
-        WHERE i.vendor_id = ? AND p.active = 1 AND p.governance_status = 'approved'
+        WHERE i.vendor_id = ? AND (? = '' OR i.branch_id = ?) AND p.active = 1 AND p.governance_status = 'approved'
           AND i.active = 1 AND i.quarantine_status = 'available'
           AND i.cold_chain_status IN ('not_applicable','within_range')
           AND i.expiry_date IS NOT NULL AND date(i.expiry_date) >= date('now')
@@ -76,7 +84,7 @@ export async function GET(request: Request) {
       )
       SELECT * FROM counted
       ORDER BY lower(productName), productId LIMIT ? OFFSET ?
-    `).bind(vendorId, query, search, search, search, search, search, pageSize, offset).all<CatalogRow>();
+      `).bind(vendorId, effectiveBranchId === null ? "" : String(effectiveBranchId), effectiveBranchId ?? 0, query, search, search, search, search, search, pageSize, offset).all<CatalogRow>();
     const total = Number(result.results[0]?.totalCount ?? 0);
     return Response.json({
       products: result.results.map((resultRow) => {

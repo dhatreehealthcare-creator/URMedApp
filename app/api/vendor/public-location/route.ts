@@ -56,6 +56,8 @@ export async function POST(request: Request) {
         await getD1().prepare(`UPDATE vendor_public_locations
           SET publication_status = 'draft', published_at = NULL, updated_at = CURRENT_TIMESTAMP
           WHERE vendor_id = ?`).bind(vendorId).run();
+        await getD1().prepare(`UPDATE pharmacy_branches SET public_location_status='draft', public_published_at=NULL,
+          updated_at=CURRENT_TIMESTAMP WHERE vendor_id = ? AND is_primary = 1`).bind(vendorId).run();
         await appendAuditEvent({
           vendorId,
           actorProfileId: profile.id,
@@ -127,6 +129,15 @@ export async function POST(request: Request) {
     ).run();
 
     const after = await loadPublicLocation(vendorId);
+    await getD1().prepare(`UPDATE pharmacy_branches SET public_label=?, public_address=?, public_latitude=?, public_longitude=?,
+      pickup_enabled=?, service_enabled=?, service_radius_km=?, public_location_status=?,
+      public_location_consent_at=CASE WHEN ?='published' THEN CURRENT_TIMESTAMP ELSE public_location_consent_at END,
+      public_published_at=CASE WHEN ?='published' THEN COALESCE(public_published_at,CURRENT_TIMESTAMP) ELSE NULL END,
+      updated_at=CURRENT_TIMESTAMP WHERE vendor_id = ? AND is_primary = 1`).bind(
+      location.label, location.address, location.latitude, location.longitude,
+      location.pickupEnabled ? 1 : 0, location.serviceEnabled ? 1 : 0, location.serviceRadiusKm,
+      publicationStatus, publicationStatus, publicationStatus, vendorId,
+    ).run();
     await appendAuditEvent({
       vendorId,
       actorProfileId: profile.id,

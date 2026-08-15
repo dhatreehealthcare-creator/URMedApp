@@ -1,6 +1,8 @@
 export type CustomerCartLine = {
   inventoryId: number;
   vendorId: number;
+  branchId: number;
+  branchName: string;
   productId: number;
   businessName: string;
   productName: string;
@@ -24,6 +26,8 @@ export type CustomerCartLine = {
 
 export type CustomerCartGroup = {
   vendorId: number;
+  branchId: number;
+  branchName: string;
   businessName: string;
   lines: CustomerCartLine[];
   unitCount: number;
@@ -60,10 +64,15 @@ export function updateCustomerCartQuantity(current: CustomerCartLine[], inventor
 }
 
 export function groupCustomerCart(current: CustomerCartLine[]): CustomerCartGroup[] {
-  const groups = new Map<number, CustomerCartLine[]>();
-  for (const line of current) groups.set(line.vendorId, [...(groups.get(line.vendorId) ?? []), line]);
-  return [...groups.entries()].map(([vendorId, lines]) => ({
-    vendorId,
+  const groups = new Map<string, CustomerCartLine[]>();
+  for (const line of current) {
+    const key = `${line.vendorId}:${line.branchId}`;
+    groups.set(key, [...(groups.get(key) ?? []), line]);
+  }
+  return [...groups.values()].map((lines) => ({
+    vendorId: lines[0]?.vendorId ?? 0,
+    branchId: lines[0]?.branchId ?? 0,
+    branchName: lines[0]?.branchName ?? "Branch",
     businessName: lines[0]?.businessName ?? "Pharmacy",
     lines,
     unitCount: lines.reduce((total, line) => total + line.quantity, 0),

@@ -28,19 +28,19 @@ function fixture() {
     CREATE TABLE manufacturers(id INTEGER PRIMARY KEY,name TEXT);
     CREATE TABLE vendors(id INTEGER PRIMARY KEY,business_name TEXT,latitude TEXT,longitude TEXT);
     CREATE TABLE products(id INTEGER PRIMARY KEY,name TEXT,manufacturer TEXT,manufacturer_id INTEGER);
-    CREATE TABLE pharmacy_inventory(id INTEGER PRIMARY KEY,vendor_id INTEGER,product_id INTEGER,expiry_date TEXT,
+    CREATE TABLE pharmacy_inventory(id INTEGER PRIMARY KEY,vendor_id INTEGER,branch_id INTEGER,product_id INTEGER,expiry_date TEXT,
       purchase_price_paise INTEGER,sale_price_paise INTEGER,quantity INTEGER,reserved_quantity INTEGER,
       reorder_level INTEGER,quarantine_status TEXT,cold_chain_status TEXT,active INTEGER);
     CREATE TABLE inventory_price_history(id INTEGER PRIMARY KEY,inventory_id INTEGER,vendor_id INTEGER,product_id INTEGER,
       purchase_price_paise INTEGER,sale_price_paise INTEGER,mrp_paise INTEGER,gst_percent INTEGER,
       effective_from TEXT,effective_until TEXT);
-    CREATE TABLE orders(id INTEGER PRIMARY KEY,order_number TEXT,vendor_id INTEGER,order_status TEXT,
+    CREATE TABLE orders(id INTEGER PRIMARY KEY,order_number TEXT,vendor_id INTEGER,branch_id INTEGER,order_status TEXT,
       delivery_method TEXT,delivery_status TEXT,payment_method TEXT,payment_status TEXT,delivery_fee_paise INTEGER,
       total_paise INTEGER,created_at TEXT,latitude TEXT,longitude TEXT);
     CREATE TABLE order_items(id INTEGER PRIMARY KEY,order_id INTEGER,product_id INTEGER,inventory_id INTEGER,
       quantity INTEGER,line_total_paise INTEGER);
     CREATE TABLE tax_invoices(id INTEGER PRIMARY KEY,source_type TEXT,source_id INTEGER,issued_at TEXT);
-    CREATE TABLE offline_sales(id INTEGER PRIMARY KEY,vendor_id INTEGER);
+    CREATE TABLE offline_sales(id INTEGER PRIMARY KEY,vendor_id INTEGER,branch_id INTEGER);
     CREATE TABLE offline_sale_events(id INTEGER PRIMARY KEY,offline_sale_id INTEGER,event_type TEXT,created_at TEXT);
     CREATE TABLE offline_sale_items(id INTEGER PRIMARY KEY,offline_sale_id INTEGER,inventory_id INTEGER,product_id INTEGER,
       quantity INTEGER,line_total_paise INTEGER);
@@ -56,19 +56,19 @@ function fixture() {
     INSERT INTO vendors VALUES(1,'Central Pharmacy','17.4300','78.4000'),(2,'Other Pharmacy','','');
     INSERT INTO products VALUES(10,'Example Tablet','Legacy Safe',1),(11,'Second Medicine','Other Maker',NULL);
     INSERT INTO pharmacy_inventory VALUES
-      (100,1,10,'2027-01-01',500,900,10,3,4,'available','not_applicable',1),
-      (101,2,10,'2025-01-01',500,900,2,0,4,'available','not_applicable',1),
-      (102,1,11,'2027-02-01',300,500,4,0,2,'quality_hold','not_applicable',1);
+      (100,1,1,10,'2027-01-01',500,900,10,3,4,'available','not_applicable',1),
+      (101,2,2,10,'2025-01-01',500,900,2,0,4,'available','not_applicable',1),
+      (102,1,1,11,'2027-02-01',300,500,4,0,2,'quality_hold','not_applicable',1);
     INSERT INTO inventory_price_history VALUES
       (1,100,1,10,500,900,1000,5,'2026-01-01',NULL),
       (2,101,2,10,500,900,1000,5,'2026-01-01',NULL),
       (3,102,1,11,300,500,600,5,'2026-01-01',NULL);
     INSERT INTO orders VALUES
-      (200,'ORD-200',1,'completed','urmed','delivered','cod','paid',500,2600,'2026-08-01T10:00:00Z','17.4400','78.4100'),
-      (201,'ORD-201',1,'cancelled','pharmacy','cancelled','online','failed',0,900,'2026-08-02T10:00:00Z','17.4500','78.4200');
+      (200,'ORD-200',1,1,'completed','urmed','delivered','cod','paid',500,2600,'2026-08-01T10:00:00Z','17.4400','78.4100'),
+      (201,'ORD-201',1,1,'cancelled','pharmacy','cancelled','online','failed',0,900,'2026-08-02T10:00:00Z','17.4500','78.4200');
     INSERT INTO order_items VALUES(1,200,10,100,2,2100),(2,201,10,100,1,900);
     INSERT INTO tax_invoices VALUES(1,'online_order',200,'2026-08-01T12:00:00Z');
-    INSERT INTO offline_sales VALUES(300,1);
+    INSERT INTO offline_sales VALUES(300,1,1);
     INSERT INTO offline_sale_events VALUES(1,300,'completed','2026-08-03T12:00:00Z');
     INSERT INTO offline_sale_items VALUES(1,300,100,10,1,945);
     INSERT INTO sales_returns VALUES(400,1,'online','completed','2026-08-04T12:00:00Z');
@@ -158,7 +158,7 @@ test("home-delivery report returns operational metrics without coordinates or cu
   assert.equal("customerName" in report.rows[0], false);
   assert.equal("deliveryAddress" in report.rows[0], false);
   const unavailable = calculateDeliveryReportRow({
-    orderId: 1, orderNumber: "O", vendorId: 1, businessName: "S", deliveryMethod: "pharmacy",
+    orderId: 1, orderNumber: "O", vendorId: 1, branchId: 1, businessName: "S", deliveryMethod: "pharmacy",
     deliveryStatus: "out_for_delivery", paymentMethod: "online", paymentStatus: "paid", deliveryFeePaise: 0,
     orderTotalPaise: 100, createdAt: "2026-08-01T10:00:00Z", riderName: "", assignmentStatus: "",
     assignedAt: null, pickedUpAt: null, deliveredAt: null, originLatitude: "", originLongitude: "",

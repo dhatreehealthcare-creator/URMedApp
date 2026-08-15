@@ -5,6 +5,8 @@ import { requireVendorPermission } from "../../../../../lib/vendor-access";
 
 type OrderDetailRow = {
   id: number;
+  branchId: number | null;
+  branchName: string | null;
   orderNumber: string;
   customerProfileId: number;
   customerName: string;
@@ -81,7 +83,7 @@ type PrescriptionDetail = {
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const { vendorId } = await requireVendorPermission(request, "sale.write");
+    const { vendorId, branchId: staffBranchId } = await requireVendorPermission(request, "sale.write");
     const orderId = Number((await context.params).id);
     if (!Number.isInteger(orderId) || orderId < 1) {
       return Response.json({ error: "Order is invalid" }, { status: 400 });
@@ -89,7 +91,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
     const db = getD1();
     const order = await db.prepare(`
-      SELECT o.id, o.order_number AS orderNumber, o.customer_profile_id AS customerProfileId,
+      SELECT o.id, o.branch_id AS branchId, branch.name AS branchName, o.order_number AS orderNumber, o.customer_profile_id AS customerProfileId,
         o.customer_name AS customerName, o.customer_phone AS customerPhone,
         customer.email AS customerEmail, o.delivery_address AS deliveryAddress,
         o.latitude, o.longitude, o.subtotal_paise AS subtotalPaise, o.tax_paise AS taxPaise,
@@ -104,9 +106,10 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       FROM orders o
       JOIN account_profiles customer ON customer.id = o.customer_profile_id
       LEFT JOIN tax_invoices invoice ON invoice.id = o.invoice_id
-      WHERE o.id = ? AND o.vendor_id = ? AND o.order_type = 'online'
+      LEFT JOIN pharmacy_branches branch ON branch.id = o.branch_id AND branch.vendor_id = o.vendor_id
+      WHERE o.id = ? AND o.vendor_id = ? AND (? IS NULL OR o.branch_id = ?) AND o.order_type = 'online'
       LIMIT 1
-    `).bind(orderId, vendorId).first<OrderDetailRow>();
+    `).bind(orderId, vendorId, staffBranchId, staffBranchId).first<OrderDetailRow>();
     if (!order) return Response.json({ error: "Order not found" }, { status: 404 });
 
     const [itemResult, eventResult, prescription] = await Promise.all([

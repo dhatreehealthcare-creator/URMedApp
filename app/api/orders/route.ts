@@ -17,7 +17,7 @@ const privateResponseHeaders = { "Cache-Control": "private, no-store" };
 
 type OrderItemInput = { inventoryId?: unknown; quantity?: unknown };
 type SelectedOffer = {
-  inventoryId: number; vendorId: number; productId: number; productName: string; prescriptionRequired: number;
+  inventoryId: number; vendorId: number; branchId: number; branchName: string; productId: number; productName: string; prescriptionRequired: number;
 };
 type AllocationBatch = {
   inventoryId: number; productId: number; productName: string; batchNumber: string; expiryDate: string;
@@ -102,6 +102,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  // Legacy public_location.publication_status = 'published' is mirrored into
+  // the selected branch; checkout never falls back to private vendor coords.
   try {
     const { profile } = await requireLocalProfile(request, ["customer"]);
     const body = await request.json() as Record<string, unknown>;
@@ -139,10 +141,12 @@ export async function POST(request: Request) {
     const selected: Array<SelectedOffer & { requestedQuantity: number }> = [];
     for (const [inventoryId, requestedQuantity] of requestedByInventory) {
       const row = await db.prepare(`
-        SELECT i.id AS inventoryId, i.vendor_id AS vendorId, i.product_id AS productId,
+        SELECT i.id AS inventoryId, i.vendor_id AS vendorId, i.branch_id AS branchId,
+          branch.name AS branchName, i.product_id AS productId,
           p.name AS productName, p.prescription_required AS prescriptionRequired
         FROM pharmacy_inventory i JOIN products p ON p.id = i.product_id
         JOIN vendors v ON v.id = i.vendor_id
+        JOIN pharmacy_branches branch ON branch.id = i.branch_id AND branch.vendor_id = i.vendor_id AND branch.status = 'active'
         WHERE i.id = ? AND p.active = 1 AND ${operationalVendor} LIMIT 1
       `).bind(inventoryId).first<SelectedOffer>();
       if (!row) return Response.json({ error: "A selected medicine is no longer available" }, { status: 409 });
@@ -150,6 +154,8 @@ export async function POST(request: Request) {
     }
     const vendorId = selected[0].vendorId;
     if (selected.some((row) => row.vendorId !== vendorId)) return Response.json({ error: "Place separate orders for different pharmacies" }, { status: 400 });
+    const branchId = selected[0].branchId;
+    if (selected.some((row) => row.branchId !== branchId)) return Response.json({ error: "Place separate orders for different pharmacy branches" }, { status: 400 });
 
     const productRequests = new Map<number, { productName: string; quantity: number; prescriptionRequired: boolean }>();
     for (const item of selected) {
@@ -176,14 +182,14 @@ export async function POST(request: Request) {
     }
 
     const vendor = await db.prepare(`SELECT v.gst_number AS gstNumber, v.home_delivery AS homeDelivery,
-      public_location.latitude AS publicLatitude, public_location.longitude AS publicLongitude,
-      public_location.pickup_enabled AS publicPickupEnabled,
-      public_location.service_enabled AS publicServiceEnabled,
-      public_location.service_radius_km AS publicServiceRadiusKm
-      FROM vendors v LEFT JOIN vendor_public_locations public_location
-        ON public_location.vendor_id = v.id AND public_location.publication_status = 'published'
+      CASE WHEN branch.public_location_status = 'published' THEN branch.public_latitude ELSE '' END AS publicLatitude,
+      CASE WHEN branch.public_location_status = 'published' THEN branch.public_longitude ELSE '' END AS publicLongitude,
+      CASE WHEN branch.public_location_status = 'published' THEN branch.pickup_enabled ELSE 0 END AS publicPickupEnabled,
+      CASE WHEN branch.public_location_status = 'published' THEN branch.service_enabled ELSE 0 END AS publicServiceEnabled,
+      CASE WHEN branch.public_location_status = 'published' THEN branch.service_radius_km ELSE 0 END AS publicServiceRadiusKm
+      FROM vendors v JOIN pharmacy_branches branch ON branch.id = ? AND branch.vendor_id = v.id AND branch.status = 'active'
       WHERE v.id = ? AND ${operationalVendor} LIMIT 1`)
-      .bind(vendorId).first<{
+      .bind(branchId, vendorId).first<{
         gstNumber: string; homeDelivery: number;
         publicLatitude: string | null; publicLongitude: string | null; publicPickupEnabled: number | null;
         publicServiceEnabled: number | null; publicServiceRadiusKm: number | null;
@@ -200,12 +206,12 @@ export async function POST(request: Request) {
           ${effectivePriceFallbackSql("i", "gst_percent")} AS gstPercent, p.hsn_code AS hsnCode,
           (i.quantity - i.reserved_quantity) AS availableQuantity
         FROM pharmacy_inventory i JOIN products p ON p.id = i.product_id
-        WHERE i.vendor_id = ? AND i.product_id = ? AND i.active = 1 AND p.active = 1
+        WHERE i.vendor_id = ? AND i.branch_id = ? AND i.product_id = ? AND i.active = 1 AND p.active = 1
           AND i.quarantine_status = 'available' AND i.expiry_date IS NOT NULL
           AND i.cold_chain_status IN ('not_applicable','within_range')
           AND date(i.expiry_date) >= date('now') AND (i.quantity - i.reserved_quantity) > 0
         ORDER BY date(i.expiry_date), i.id
-      `).bind(vendorId, productId).all<AllocationBatch>();
+      `).bind(vendorId, branchId, productId).all<AllocationBatch>();
       try {
         allocationBatches.push(...allocateFefo(productRequest.quantity, batches.results));
       } catch {
@@ -269,11 +275,11 @@ export async function POST(request: Request) {
     const number = orderNumber();
     const reservationExpiry = paymentMethod === "online" ? reservationExpiresAt() : null;
     const statements = [
-      db.prepare(`INSERT INTO orders (order_number, customer_profile_id, vendor_id, prescription_id, subtotal_paise, tax_paise,
+      db.prepare(`INSERT INTO orders (order_number, customer_profile_id, vendor_id, branch_id, prescription_id, subtotal_paise, tax_paise,
         delivery_fee_paise, total_paise, payment_method, payment_status, delivery_method, order_status,
         delivery_status, prescription_status, place_of_supply_state_code, customer_name, customer_phone,
         delivery_address, latitude, longitude, inventory_status, reservation_expires_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         FROM vendors checkout_vendor
         WHERE checkout_vendor.id = ? AND ${currentOperationalVendorPredicate("checkout_vendor")}
           AND (? IS NULL OR EXISTS (SELECT 1 FROM prescriptions eligible_prescription
@@ -281,7 +287,7 @@ export async function POST(request: Request) {
             AND eligible_prescription.vendor_id=? AND eligible_prescription.status IN ('uploaded','approved')
             AND NOT EXISTS (SELECT 1 FROM orders used_order
               WHERE used_order.prescription_id=eligible_prescription.id)))`)
-        .bind(number, profile.id, vendorId, prescriptionId, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise,
+        .bind(number, profile.id, vendorId, branchId, prescriptionId, subtotalPaise, taxPaise, deliveryFeePaise, totalPaise,
           paymentMethod, paymentMethod === "cod" ? "cod_due" : "pending", deliveryMethod,
           prescriptionStatus === "pending_review" ? "awaiting_prescription_review" : paymentMethod === "online" ? "awaiting_payment" : "placed",
           prescriptionStatus === "pending_review" ? "pharmacist_review" : "awaiting_confirmation", prescriptionStatus,

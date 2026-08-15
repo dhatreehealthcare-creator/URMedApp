@@ -256,6 +256,62 @@ export async function runPhase0IntegrationSuite() {
     await enableEmail("customer@urmed.test");
   });
 
+  await scenario("vendor branches own stock, public discovery, and controlled deactivation", async () => {
+    const created = await expectStatus(api("/api/vendor/branches", {
+      token: context.tokens.vendor,
+      json: {
+        branchCode: "NORTH",
+        name: "North Integration Branch",
+        address: "Private North Branch Address",
+        latitude: "17.5000",
+        longitude: "78.5000",
+        publicLabel: "North Customer Pickup",
+        publicAddress: "North Public Pickup Point",
+        publicLatitude: "17.5001",
+        publicLongitude: "78.5001",
+        pickupEnabled: true,
+        serviceEnabled: true,
+        serviceRadiusKm: 10,
+        publishPublicLocation: true,
+      },
+    }), 201, "create pharmacy branch");
+    const branch = created.payload.branches.find((row) => row.branchCode === "NORTH");
+    assert.ok(branch?.id > 0, "created branch id");
+    const branchStock = await expectStatus(api("/api/inventory", {
+      token: context.tokens.vendor,
+      json: {
+        legacyId: context.legacyId,
+        branchId: branch.id,
+        batchNumber: "BRANCH-NORTH-001",
+        expiryDate: isoDate(365),
+        manufacturingDate: isoDate(-30),
+        dosage: "500 mg",
+        purchasePrice: 4,
+        salePrice: 6,
+        mrp: 8,
+        quantity: 7,
+        gstPercent: 5,
+      },
+    }), 201, "create branch opening stock");
+    assert.equal(branchStock.payload.saved, true);
+    const branchProduct = (await inventoryMine()).payload.inventory.find((row) => row.batchNumber === "BRANCH-NORTH-001");
+    assert.ok(branchProduct?.productName, "branch product visible to owner");
+    const publicBranch = await expectStatus(api(`/api/inventory?q=${encodeURIComponent(branchProduct.productName)}&latitude=17.5000&longitude=78.5000`), 200, "discover branch offer");
+    const branchOffer = publicBranch.payload.inventory.find((row) => row.branchId === branch.id);
+    assert.equal(branchOffer.branchName, "North Integration Branch");
+    assert.equal(branchOffer.publicLocation.address, "North Public Pickup Point");
+    assert.equal(Object.hasOwn(branchOffer, "address"), false);
+    const otherVendorBranches = await expectStatus(api("/api/vendor/branches", { token: context.tokens.vendorOperationalTwo }), 200, "other vendor branch isolation");
+    assert.equal(otherVendorBranches.payload.branches.some((row) => row.id === branch.id), false);
+    const adminBranches = await expectStatus(api(`/api/admin/branches?vendorId=${context.vendorId}&status=active`, { token: context.tokens.admin }), 200, "admin branch directory");
+    assert.equal(adminBranches.payload.branches.some((row) => row.id === branch.id), true);
+    assert.equal(Object.hasOwn(adminBranches.payload.branches.find((row) => row.id === branch.id), "latitude"), false);
+    await expectStatus(api("/api/vendor/branches", { token: context.tokens.vendor, json: { action: "deactivate", id: branch.id } }), 200, "deactivate branch");
+    const hiddenBranch = await expectStatus(api(`/api/inventory?q=${encodeURIComponent(branchProduct.productName)}&latitude=17.5000&longitude=78.5000`), 200, "deactivated branch omitted");
+    assert.equal(hiddenBranch.payload.inventory.some((row) => row.branchId === branch.id), false);
+    await expectStatus(api("/api/vendor/branches", { token: context.tokens.vendor, json: { action: "activate", id: branch.id } }), 200, "reactivate branch");
+  });
+
   await scenario("vendor notification inbox is private, tenant-scoped, versioned, audited, and re-alertable", async () => {
     await expectStatus(api("/api/vendor/notifications"), 401, "unauthenticated vendor notification inbox");
     await expectStatus(api("/api/vendor/notifications", { token: context.tokens.customer }), 403, "customer vendor notification inbox");
@@ -804,6 +860,34 @@ export async function runPhase0IntegrationSuite() {
     }
     assert.ok(catalog.payload.products.some((product) => product.publicLocation?.address === "P009 explicitly public pickup point"));
 
+    const nearbyQuery = encodeURIComponent("P304 Counter OTC Fixture");
+    const nearbyInventory = await expectStatus(api(`/api/inventory?q=${nearbyQuery}&latitude=17.432000&longitude=78.407000&page=1&pageSize=1`), 200, "nearby inventory offers");
+    assert.equal(nearbyInventory.payload.pagination.nearby, true);
+    assert.equal(nearbyInventory.payload.pagination.hasMore, true);
+    assert.equal(nearbyInventory.payload.inventory.length, 1);
+    assert.equal(nearbyInventory.payload.inventory[0].id, 900030);
+    assert.equal(nearbyInventory.payload.inventory[0].businessName, "URMED Test Pharmacy");
+    assert.equal(typeof nearbyInventory.payload.inventory[0].publicDistanceKm, "number");
+    assert.equal(Object.hasOwn(nearbyInventory.payload.inventory[0], "latitude"), false);
+    assert.equal(Object.hasOwn(nearbyInventory.payload.inventory[0], "vendorLatitude"), false);
+
+    const secondNearbyInventory = await expectStatus(api(`/api/inventory?q=${nearbyQuery}&latitude=17.432000&longitude=78.407000&page=2&pageSize=1`), 200, "second nearby inventory offer");
+    assert.equal(secondNearbyInventory.payload.inventory.length, 1);
+    assert.equal(secondNearbyInventory.payload.inventory[0].id, 900070);
+    assert.ok(secondNearbyInventory.payload.inventory[0].publicDistanceKm > nearbyInventory.payload.inventory[0].publicDistanceKm);
+
+    const nearbyCatalog = await expectStatus(api(`/api/catalog?q=${nearbyQuery}&latitude=17.432000&longitude=78.407000&page=1&pageSize=10`), 200, "nearby catalog offers");
+    const nearbyOffers = nearbyCatalog.payload.products.filter((product) => [900030, 900070].includes(product.inventoryId));
+    assert.equal(nearbyOffers.length, 2);
+    assert.equal(nearbyOffers[0].inventoryId, 900030);
+    assert.equal(nearbyOffers[1].inventoryId, 900070);
+    for (const offer of nearbyOffers) {
+      assert.equal(Object.hasOwn(offer, "latitude"), false);
+      assert.equal(Object.hasOwn(offer, "vendorLatitude"), false);
+    }
+
+    await expectStatus(api(`/api/catalog?q=${nearbyQuery}&latitude=17.432000`), 400, "nearby search requires both coordinates");
+
     await expectStatus(api("/api/vendor/public-location", { token: context.tokens.customer }), 403, "customer cannot manage vendor public location");
     const ownerLocation = await expectStatus(api("/api/vendor/public-location", { token: context.tokens.vendor }), 200, "vendor owner public location");
     assert.equal(ownerLocation.payload.publicLocation.publicationStatus, "published");
@@ -829,7 +913,7 @@ export async function runPhase0IntegrationSuite() {
       json: { action: "unpublish" },
     }), 200, "vendor unpublishes customer location");
     const hiddenInventory = await expectStatus(api(`/api/inventory?q=${encodeURIComponent(mine.productName)}`), 200, "unpublished public location");
-    assert.equal(inventoryRow(hiddenInventory.payload, context.inventoryId).publicLocation, null);
+    assert.equal(inventoryRow(hiddenInventory.payload, context.inventoryId), undefined, "unpublished pharmacy offers must be omitted from public search");
     const unpublishedDelivery = await expectStatus(api("/api/orders", {
       token: context.tokens.customer,
       json: {

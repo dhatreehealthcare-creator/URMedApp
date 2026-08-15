@@ -287,9 +287,42 @@ export const vendorPublicLocations = sqliteTable("vendor_public_locations", {
   index("vendor_public_locations_publication_idx").on(table.publicationStatus, table.vendorId),
 ]);
 
+/** Operational branch owned by one legal vendor tenant. Private coordinates
+ * are never used by public marketplace queries; only the explicitly published
+ * customer-facing location fields are exposed. */
+export const pharmacyBranches = sqliteTable("pharmacy_branches", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  branchCode: text("branch_code").notNull(),
+  name: text("name").notNull(),
+  status: text("status", { enum: ["active", "inactive"] }).notNull().default("active"),
+  address: text("address").notNull().default(""),
+  latitude: text("latitude").notNull().default(""),
+  longitude: text("longitude").notNull().default(""),
+  publicLabel: text("public_label").notNull().default(""),
+  publicAddress: text("public_address").notNull().default(""),
+  publicLatitude: text("public_latitude").notNull().default(""),
+  publicLongitude: text("public_longitude").notNull().default(""),
+  publicLocationStatus: text("public_location_status", { enum: ["draft", "published"] }).notNull().default("draft"),
+  publicLocationConsentAt: text("public_location_consent_at"),
+  publicPublishedAt: text("public_published_at"),
+  pickupEnabled: integer("pickup_enabled", { mode: "boolean" }).notNull().default(false),
+  serviceEnabled: integer("service_enabled", { mode: "boolean" }).notNull().default(false),
+  serviceRadiusKm: integer("service_radius_km").notNull().default(5),
+  isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("pharmacy_branches_vendor_code_uidx").on(table.vendorId, table.branchCode),
+  uniqueIndex("pharmacy_branches_one_primary_uidx").on(table.vendorId).where(sql`${table.isPrimary} = 1`),
+  index("pharmacy_branches_vendor_status_idx").on(table.vendorId, table.status, table.id),
+  index("pharmacy_branches_public_idx").on(table.publicLocationStatus, table.status, table.vendorId),
+]);
+
 export const pharmacyInventory = sqliteTable("pharmacy_inventory", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  branchId: integer("branch_id").references(() => pharmacyBranches.id),
   productId: integer("product_id").notNull().references(() => products.id),
   batchNumber: text("batch_number").notNull(),
   expiryDate: text("expiry_date"),
@@ -310,9 +343,10 @@ export const pharmacyInventory = sqliteTable("pharmacy_inventory", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
-  uniqueIndex("pharmacy_inventory_batch_uidx").on(table.vendorId, table.productId, table.batchNumber),
+  uniqueIndex("pharmacy_inventory_branch_batch_uidx").on(table.branchId, table.productId, table.batchNumber),
   index("pharmacy_inventory_product_idx").on(table.productId, table.active, table.quantity),
   index("pharmacy_inventory_vendor_idx").on(table.vendorId),
+  index("pharmacy_inventory_branch_product_idx").on(table.branchId, table.productId, table.active, table.quantity),
 ]);
 
 export const inventoryPriceHistory = sqliteTable("inventory_price_history", {
@@ -464,6 +498,7 @@ export const orders = sqliteTable("orders", {
   orderNumber: text("order_number").notNull(),
   customerProfileId: integer("customer_profile_id").notNull().references(() => accountProfiles.id),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  branchId: integer("branch_id").references(() => pharmacyBranches.id),
   prescriptionId: integer("prescription_id"),
   invoiceId: integer("invoice_id"),
   orderType: text("order_type").notNull().default("online"),
@@ -496,6 +531,7 @@ export const orders = sqliteTable("orders", {
   index("orders_delivery_date_vendor_idx").on(table.deliveryMethod, table.createdAt, table.vendorId),
   index("orders_vendor_delivery_date_idx").on(table.vendorId, table.deliveryMethod, table.createdAt, table.id),
   index("orders_status_date_vendor_idx").on(table.orderStatus, table.createdAt, table.vendorId),
+  index("orders_branch_date_idx").on(table.branchId, table.createdAt, table.id),
   index("orders_razorpay_idx").on(table.razorpayOrderId),
 ]);
 
@@ -627,6 +663,7 @@ export const vendorBankAccounts = sqliteTable("vendor_bank_accounts", {
 export const vendorStaff = sqliteTable("vendor_staff", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  branchId: integer("branch_id").references(() => pharmacyBranches.id),
   profileId: integer("profile_id").notNull().references(() => accountProfiles.id),
   staffRole: text("staff_role", { enum: ["owner", "pharmacist", "counter_staff", "inventory_manager", "delivery_coordinator"] }).notNull(),
   permissionsJson: text("permissions_json").notNull().default("[]"),
@@ -636,6 +673,7 @@ export const vendorStaff = sqliteTable("vendor_staff", {
 }, (table) => [
   uniqueIndex("vendor_staff_vendor_profile_uidx").on(table.vendorId, table.profileId),
   index("vendor_staff_role_idx").on(table.vendorId, table.staffRole, table.status),
+  index("vendor_staff_branch_idx").on(table.vendorId, table.branchId, table.status),
 ]);
 
 export const storedDocuments = sqliteTable("stored_documents", {
@@ -764,6 +802,7 @@ export const purchaseOrders = sqliteTable("purchase_orders", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   purchaseNumber: text("purchase_number").notNull(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  branchId: integer("branch_id").references(() => pharmacyBranches.id),
   supplierId: integer("supplier_id").notNull().references(() => suppliers.id),
   invoiceNumber: text("invoice_number").notNull(),
   invoiceDate: text("invoice_date").notNull(),
@@ -784,6 +823,7 @@ export const purchaseOrders = sqliteTable("purchase_orders", {
   uniqueIndex("purchase_orders_number_uidx").on(table.purchaseNumber),
   uniqueIndex("purchase_orders_vendor_invoice_uidx").on(table.vendorId, table.supplierId, table.invoiceNumber),
   index("purchase_orders_vendor_date_idx").on(table.vendorId, table.invoiceDate),
+  index("purchase_orders_branch_date_idx").on(table.branchId, table.invoiceDate, table.id),
 ]);
 
 export const purchaseOrderItems = sqliteTable("purchase_order_items", {
@@ -986,6 +1026,7 @@ export const offlineSales = sqliteTable("offline_sales", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   saleNumber: text("sale_number").notNull(),
   vendorId: integer("vendor_id").notNull().references(() => vendors.id),
+  branchId: integer("branch_id").references(() => pharmacyBranches.id),
   customerProfileId: integer("customer_profile_id").references(() => accountProfiles.id),
   customerName: text("customer_name").notNull().default("Walk-in customer"),
   customerPhone: text("customer_phone").notNull().default(""),
@@ -1011,6 +1052,7 @@ export const offlineSales = sqliteTable("offline_sales", {
   uniqueIndex("offline_sales_vendor_idempotency_uidx").on(table.vendorId, table.idempotencyKey).where(sql`${table.idempotencyKey} <> ''`),
   uniqueIndex("offline_sales_prescription_uidx").on(table.offlinePrescriptionId).where(sql`${table.offlinePrescriptionId} IS NOT NULL`),
   index("offline_sales_vendor_date_idx").on(table.vendorId, table.createdAt),
+  index("offline_sales_branch_date_idx").on(table.branchId, table.createdAt, table.id),
   check("offline_sales_payment_mode_check", sql`${table.paymentMode} IN ('cash', 'upi', 'card', 'credit')`),
   check("offline_sales_amounts_check", sql`${table.grossPaise} >= 0 AND ${table.discountPaise} >= 0 AND ${table.subtotalPaise} >= 0 AND ${table.taxPaise} >= 0 AND ${table.cgstPaise} >= 0 AND ${table.sgstPaise} >= 0 AND ${table.igstPaise} >= 0 AND ${table.totalPaise} >= 0`),
 ]);

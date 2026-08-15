@@ -20,7 +20,7 @@ import cartStyles from "./customer-cart.module.css";
 
 type Role = "customer" | "vendor";
 type Inventory = {
-  id: number; vendorId: number; productId: number; legacyId: number; productName: string; manufacturer: string; businessName: string;
+  id: number; vendorId: number; branchId: number; branchName: string; productId: number; legacyId: number; productName: string; manufacturer: string; businessName: string;
   batchNumber: string; expiryDate: string | null; purchasePricePaise?: number; salePricePaise: number;
   quantity: number; reservedQuantity: number; gstPercent: number; reorderLevel: number; prescriptionRequired: number;
   quarantineStatus: string; expiryStatus: "valid" | "near_expiry" | "expired" | "missing_expiry";
@@ -82,6 +82,8 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
   const [signedIn, setSignedIn] = useState(false);
   const [inventory, setInventory] = useState<Inventory[]>([]);
+  const [inventoryHasMore, setInventoryHasMore] = useState(false);
+  const [inventoryPage, setInventoryPage] = useState(1);
   const [orders, setOrders] = useState<Order[]>([]);
   const [query, setQuery] = useState(reorderRequest?.productName ?? "");
   const [selectedInventoryId, setSelectedInventoryId] = useState(reorderRequest?.inventoryId ?? 0);
@@ -99,6 +101,7 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
   const [refillReminderId, setRefillReminderId] = useState(0);
   const [cart, setCart] = useState<CustomerCartLine[]>([]);
   const [checkoutVendorId, setCheckoutVendorId] = useState(0);
+  const [checkoutBranchId, setCheckoutBranchId] = useState(0);
   const [message, setMessage] = useState(reorderRequest
     ? `${reorderRequest.productName} was prepared from order history. Review current price, stock, delivery, address${reorderRequest.prescriptionRequired ? ", and choose a fresh eligible prescription" : ""} before submitting.`
     : "");
@@ -107,27 +110,38 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
   const [trackingNotes, setTrackingNotes] = useState<Record<number, string>>({});
   const [stockForm, setStockForm] = useState({ legacyId: "", batchNumber: "", expiryDate: "", purchasePrice: "", salePrice: "", quantity: "", gstPercent: "5", reorderLevel: "5" });
 
-  const refresh = async (search = query): Promise<Inventory[]> => {
+  const refresh = async (search = query, location?: { latitude: string; longitude: string }, append = false): Promise<Inventory[]> => {
     setError("");
     const token = await accessToken();
     setSignedIn(Boolean(token));
-    const inventoryUrl = role === "vendor" ? "/api/inventory?scope=mine" : `/api/inventory?q=${encodeURIComponent(search)}`;
+    const nextPage = append ? inventoryPage + 1 : 1;
+    const customerLatitude = location?.latitude ?? latitude;
+    const customerLongitude = location?.longitude ?? longitude;
+    const locationQuery = role === "customer" && customerLatitude && customerLongitude
+      ? `&latitude=${encodeURIComponent(customerLatitude)}&longitude=${encodeURIComponent(customerLongitude)}` : "";
+    const inventoryUrl = role === "vendor" ? "/api/inventory?scope=mine" : `/api/inventory?q=${encodeURIComponent(search)}&page=${nextPage}&pageSize=20${locationQuery}`;
     const inventoryResponse = role === "vendor" ? await authenticatedFetch(inventoryUrl, { cache: "no-store" }) : await fetch(inventoryUrl, { cache: "no-store" });
     if (inventoryResponse.ok) {
-      const payload = await inventoryResponse.json() as { inventory: Inventory[] };
-      setInventory(payload.inventory);
-      setSelectedInventoryId((current) => payload.inventory.some((item) => item.id === current) ? current : (payload.inventory[0]?.id ?? 0));
+      const payload = await inventoryResponse.json() as { inventory: Inventory[]; pagination?: { hasMore?: boolean; page?: number } };
+      const nextInventory = append ? [...inventory, ...payload.inventory] : payload.inventory;
+      setInventory(nextInventory);
+      setInventoryPage(payload.pagination?.page ?? nextPage);
+      setInventoryHasMore(Boolean(payload.pagination?.hasMore));
+      setSelectedInventoryId((current) => nextInventory.some((item) => item.id === current) ? current : (nextInventory[0]?.id ?? 0));
       if (role === "customer" && typeof window !== "undefined") {
         const url = new URL(window.location.href);
         if (url.searchParams.get("add") === "1") {
           const requestedInventoryId = Number(url.searchParams.get("inventoryId"));
-          const selected = payload.inventory.find((item) => item.id === requestedInventoryId);
+          const selected = nextInventory.find((item) => item.id === requestedInventoryId);
           if (selected) {
             setSelectedInventoryId(selected.id);
             setCheckoutVendorId(selected.vendorId);
+            setCheckoutBranchId(selected.branchId);
             setCart((current) => addCustomerCartLine(current, {
               inventoryId: selected.id,
               vendorId: selected.vendorId,
+              branchId: selected.branchId,
+              branchName: selected.branchName,
               productId: selected.productId,
               businessName: selected.businessName,
               productName: selected.productName,
@@ -207,7 +221,7 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
   };
 
   const cartGroups = groupCustomerCart(cart);
-  const checkoutGroup = cartGroups.find((group) => group.vendorId === checkoutVendorId) ?? cartGroups[0];
+  const checkoutGroup = cartGroups.find((group) => group.vendorId === checkoutVendorId && group.branchId === checkoutBranchId) ?? cartGroups[0];
 
   const addSelectedToCart = () => {
     setError(""); setMessage("");
@@ -216,6 +230,8 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
     setCart((current) => addCustomerCartLine(current, {
       inventoryId: selected.id,
       vendorId: selected.vendorId,
+      branchId: selected.branchId,
+      branchName: selected.branchName,
       productId: selected.productId,
       businessName: selected.businessName,
       productName: selected.productName,
@@ -228,6 +244,7 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
       publicLocation: selected.publicLocation,
     }, quantity));
     setCheckoutVendorId((current) => current || selected.vendorId);
+    setCheckoutBranchId((current) => current || selected.branchId);
     setMessage(`${selected.productName} was added. Prices, tax, FEFO stock and serviceability are rechecked when this pharmacy order is submitted.`);
     setRefillReminderId(0);
   };
@@ -249,10 +266,11 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
       const payload = await responsePayload<{ order: { id: number; orderNumber: string; totalPaise: number; requiresPrescriptionReview: boolean; reservationExpiresAt: string | null } }>(response);
       const reservationMessage = payload.order.reservationExpiresAt ? ` Stock is reserved until ${new Date(payload.order.reservationExpiresAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}.` : "";
       setMessage(payload.order.requiresPrescriptionReview ? `${payload.order.orderNumber} is awaiting pharmacist prescription review.${reservationMessage}` : `${payload.order.orderNumber} was created successfully.${reservationMessage}`);
-      const remaining = cart.filter((line) => line.vendorId !== checkoutGroup.vendorId);
+      const remaining = cart.filter((line) => line.vendorId !== checkoutGroup.vendorId || line.branchId !== checkoutGroup.branchId);
       setCart(remaining);
       setPrescriptionByVendor((current) => { const next = { ...current }; delete next[checkoutGroup.vendorId]; return next; });
       setCheckoutVendorId(groupCustomerCart(remaining)[0]?.vendorId ?? 0);
+      setCheckoutBranchId(groupCustomerCart(remaining)[0]?.branchId ?? 0);
       if (paymentMethod === "online" && !payload.order.requiresPrescriptionReview) await openPayment(payload.order.id);
       else await refresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Order could not be placed"); }
@@ -281,19 +299,18 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
     setAddress(selected?.address ?? "");
     setLatitude(selected?.latitude ?? "");
     setLongitude(selected?.longitude ?? "");
+    if (role === "customer" && selected?.latitude && selected.longitude) {
+      void refresh(query, { latitude: selected.latitude, longitude: selected.longitude });
+    }
   };
 
   const customerPoint = { latitude: Number(latitude), longitude: Number(longitude) };
   const customerPointValid = latitude !== "" && longitude !== "" && isValidGeoPoint(customerPoint);
-  const publicInventory = inventory.map((item) => {
-    const publicPoint = item.publicLocation
-      ? { latitude: Number(item.publicLocation.latitude), longitude: Number(item.publicLocation.longitude) }
-      : null;
-    const publicDistanceKm = customerPointValid && item.publicLocation?.serviceEnabled && publicPoint && isValidGeoPoint(publicPoint)
-      ? haversineKm(customerPoint, publicPoint)
-      : undefined;
-    return { ...item, publicDistanceKm };
-  }).sort((left, right) => (left.publicDistanceKm ?? Number.POSITIVE_INFINITY) - (right.publicDistanceKm ?? Number.POSITIVE_INFINITY));
+  // Nearby ordering is authoritative from the server. The client only formats
+  // the returned distance and performs the same calculation for checkout UX.
+  const publicInventory = inventory.filter((item) => !item.publicLocation
+    || item.publicLocation?.serviceEnabled
+    || item.publicLocation?.pickupEnabled);
   const selectedInventory = publicInventory.find((item) => item.id === selectedInventoryId);
   const checkoutOffer = checkoutGroup?.lines[0];
   const checkoutPublicPoint = checkoutOffer?.publicLocation
@@ -342,17 +359,18 @@ export function LiveMarketplace({ role, reorderRequest = null, onReorderPrepared
       <section className="portal-panel"><div className="portal-panel-heading"><div><Search size={20} /><h2>Live pharmacy cart</h2><p>Build a multi-line cart from current inventory. Pharmacy groups are checked out as separate orders.</p></div><span className={cartStyles.cartCount}><ShoppingCart size={15} />{cart.reduce((total, line) => total + line.quantity, 0)} units</span></div>
         <form className="live-search" onSubmit={(event) => { event.preventDefault(); void refresh(query); }}><input onChange={(event) => setQuery(event.target.value)} placeholder="Search stocked medicine" value={query} /><button type="submit">Search stock</button></form>
         <div className="portal-form-grid one">
-          <label className="portal-field"><span>Medicine and pharmacy *</span><select onChange={(event) => { setSelectedInventoryId(Number(event.target.value)); setRefillReminderId(0); }} required value={selectedInventoryId}>{!publicInventory.length && <option value="0">No stocked medicine found</option>}{publicInventory.map((item) => <option key={item.id} value={item.id}>{item.productName} — {item.businessName} — ₹{(item.salePricePaise / 100).toFixed(2)} ({item.quantity} available){item.publicDistanceKm !== undefined ? ` · ${formatDistance(item.publicDistanceKm)}` : ""}{item.prescriptionRequired ? " · Rx required" : ""}</option>)}</select></label>
+        <label className="portal-field"><span>Medicine and pharmacy *</span><select onChange={(event) => { setSelectedInventoryId(Number(event.target.value)); setRefillReminderId(0); }} required value={selectedInventoryId}>{!publicInventory.length && <option value="0">No stocked medicine found</option>}{publicInventory.map((item) => <option key={item.id} value={item.id}>{item.productName} — {item.businessName} — ₹{(item.salePricePaise / 100).toFixed(2)} ({item.quantity} available){item.publicDistanceKm !== undefined ? ` · ${formatDistance(item.publicDistanceKm)}` : ""}{item.prescriptionRequired ? " · Rx required" : ""}</option>)}</select><small>Offers are ranked by published pharmacy distance, serviceability, stock and earliest eligible expiry.</small></label>
           {refillReminderId > 0 && <div className="refill-checkout-note"><RotateCcw size={15} /><span><strong>Repeat order prepared from reminder</strong><small>Adding this item keeps reminder #{refillReminderId} with its pharmacy checkout.</small></span></div>}
           <label className="portal-field"><span>Quantity to add *</span><input max={Math.min(100, selectedInventory?.quantity ?? 100)} min="1" onChange={(event) => setQuantity(Number(event.target.value))} required type="number" value={quantity} /></label>
           <button className="portal-secondary wide" disabled={!selectedInventoryId} onClick={addSelectedToCart} type="button"><Plus size={15} /> Add to pharmacy cart</button>
         </div>
+        {inventoryHasMore && <button className="portal-outline wide" disabled={busy} onClick={() => void refresh(query, undefined, true)} type="button">Load more pharmacy offers</button>}
         {selectedInventory && <section className="portal-note medicine-detail-card" aria-labelledby="medicine-detail-title">
           <div><span className="portal-kicker">LIVE MEDICINE DETAILS</span><h3 id="medicine-detail-title">{selectedInventory.productName}</h3><p>{selectedInventory.manufacturer || "Manufacturer information is not available"} · {selectedInventory.businessName}</p></div>
           <div className="portal-split compact-fields"><span><small>Current price</small><strong>₹{(selectedInventory.salePricePaise / 100).toFixed(2)}</strong></span><span><small>Available stock</small><strong>{selectedInventory.quantity} units</strong></span><span><small>Prescription</small><strong>{selectedInventory.prescriptionRequired ? "Required" : "Not required"}</strong></span><span><small>Expiry status</small><strong>{selectedInventory.expiryStatus.replaceAll("_", " ")}</strong></span></div>
           <small>Prices, tax, stock and FEFO batch allocation are revalidated by the pharmacy API before checkout.</small>
         </section>}
-        <div className={cartStyles.groups}>{cartGroups.length ? cartGroups.map((group) => <article className={`${cartStyles.group} ${checkoutGroup?.vendorId === group.vendorId ? cartStyles.selected : ""}`} key={group.vendorId}><header><span><strong>{group.businessName}</strong><small>{group.lines.length} medicine lines · {group.unitCount} units</small></span><button onClick={() => setCheckoutVendorId(group.vendorId)} type="button">{checkoutGroup?.vendorId === group.vendorId ? "Checking out" : "Checkout this pharmacy"}</button></header><div>{group.lines.map((line) => <div className={cartStyles.line} key={line.inventoryId}><span><strong>{line.productName}{line.prescriptionRequired ? " · Rx" : ""}</strong><small>Current preview ₹{(line.salePricePaise / 100).toFixed(2)} + {line.gstPercent}% GST</small></span><div className={cartStyles.quantity}><button aria-label={`Reduce ${line.productName}`} onClick={() => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, line.quantity - 1))} type="button"><Minus size={13} /></button><input aria-label={`${line.productName} quantity`} max={Math.min(100, line.availableQuantity)} min="1" onChange={(event) => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, Number(event.target.value)))} type="number" value={line.quantity} /><button aria-label={`Increase ${line.productName}`} onClick={() => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, line.quantity + 1))} type="button"><Plus size={13} /></button><button aria-label={`Remove ${line.productName}`} className={cartStyles.remove} onClick={() => setCart((current) => current.filter((item) => item.inventoryId !== line.inventoryId))} type="button"><Trash2 size={14} /></button></div></div>)}</div><footer><span>Estimated medicines + GST</span><strong>₹{((group.estimatedSubtotalPaise + group.estimatedTaxPaise) / 100).toFixed(2)}</strong></footer></article>) : <div className={cartStyles.empty}><ShoppingCart size={21} /><span><strong>Your cart is empty</strong><small>Add live inventory above. No demo products are placed in the cart.</small></span></div>}</div>
+        <div className={cartStyles.groups}>{cartGroups.length ? cartGroups.map((group) => <article className={`${cartStyles.group} ${checkoutGroup?.vendorId === group.vendorId && checkoutGroup?.branchId === group.branchId ? cartStyles.selected : ""}`} key={`${group.vendorId}:${group.branchId}`}><header><span><strong>{group.businessName} · {group.branchName}</strong><small>{group.lines.length} medicine lines · {group.unitCount} units</small></span><button onClick={() => { setCheckoutVendorId(group.vendorId); setCheckoutBranchId(group.branchId); }} type="button">{checkoutGroup?.vendorId === group.vendorId && checkoutGroup?.branchId === group.branchId ? "Checking out" : "Checkout this branch"}</button></header><div>{group.lines.map((line) => <div className={cartStyles.line} key={line.inventoryId}><span><strong>{line.productName}{line.prescriptionRequired ? " · Rx" : ""}</strong><small>Current preview ₹{(line.salePricePaise / 100).toFixed(2)} + {line.gstPercent}% GST</small></span><div className={cartStyles.quantity}><button aria-label={`Reduce ${line.productName}`} onClick={() => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, line.quantity - 1))} type="button"><Minus size={13} /></button><input aria-label={`${line.productName} quantity`} max={Math.min(100, line.availableQuantity)} min="1" onChange={(event) => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, Number(event.target.value)))} type="number" value={line.quantity} /><button aria-label={`Increase ${line.productName}`} onClick={() => setCart((current) => updateCustomerCartQuantity(current, line.inventoryId, line.quantity + 1))} type="button"><Plus size={13} /></button><button aria-label={`Remove ${line.productName}`} className={cartStyles.remove} onClick={() => setCart((current) => current.filter((item) => item.inventoryId !== line.inventoryId))} type="button"><Trash2 size={14} /></button></div></div>)}</div><footer><span>Estimated medicines + GST</span><strong>₹{((group.estimatedSubtotalPaise + group.estimatedTaxPaise) / 100).toFixed(2)}</strong></footer></article>) : <div className={cartStyles.empty}><ShoppingCart size={21} /><span><strong>Your cart is empty</strong><small>Add live inventory above. No demo products are placed in the cart.</small></span></div>}</div>
         {checkoutGroup?.requiresPrescription && <PrescriptionCenter onSelect={(id) => setPrescriptionByVendor((current) => ({ ...current, [checkoutGroup.vendorId]: id }))} role="customer" selectedId={prescriptionByVendor[checkoutGroup.vendorId] ?? 0} vendorId={checkoutGroup.vendorId} />}
         <CustomerAddressBook onIdentity={applyCheckoutIdentity} onSelect={selectCheckoutAddress} />
         <form className="portal-form-grid one" onSubmit={placeOrder}>

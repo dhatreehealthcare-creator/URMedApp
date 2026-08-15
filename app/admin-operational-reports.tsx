@@ -67,6 +67,7 @@ export function AdminOperationalReports() {
   const [status, setStatus] = useState("all");
   const [secondaryFilter, setSecondaryFilter] = useState("all");
   const [vendorId, setVendorId] = useState("");
+  const [branchId, setBranchId] = useState("");
   const [rider, setRider] = useState("all");
   const [sla, setSla] = useState("all");
   const [slaTargetMinutes, setSlaTargetMinutes] = useState("120");
@@ -83,12 +84,14 @@ export function AdminOperationalReports() {
     setReport(next); setPage(1); setData(null); setError("");
     setGroupBy(next === "expenses" ? "date" : next === "stock" || next === "sales" ? "medicine" : "date");
     setChannel("all"); setStatus("all"); setSecondaryFilter("all");
+    setBranchId("");
     setRider("all"); setSla("all"); setMinDistanceKm(""); setMaxDistanceKm(""); setMinFeeRupees(""); setMaxFeeRupees("");
   };
 
   const parameters = useMemo(() => {
     const next = new URLSearchParams({ q: query, page: String(page), pageSize: "25" });
     if (vendorId) next.set("vendorId", vendorId);
+    if (branchId && report !== "expenses") next.set("branchId", branchId);
     if (report !== "stock") { next.set("dateFrom", dateFrom); next.set("dateTo", dateTo); }
     if (["stock", "sales", "expenses"].includes(report)) next.set("groupBy", groupBy);
     if (report === "stock") next.set("stockState", status);
@@ -103,7 +106,7 @@ export function AdminOperationalReports() {
       if (maxFeeRupees) next.set("maxFeePaise", String(Math.round(Number(maxFeeRupees) * 100)));
     }
     return next;
-  }, [channel, dateFrom, dateTo, groupBy, maxDistanceKm, maxFeeRupees, minDistanceKm, minFeeRupees, page, query, report, rider, secondaryFilter, sla, slaTargetMinutes, status, vendorId]);
+  }, [branchId, channel, dateFrom, dateTo, groupBy, maxDistanceKm, maxFeeRupees, minDistanceKm, minFeeRupees, page, query, report, rider, secondaryFilter, sla, slaTargetMinutes, status, vendorId]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     await Promise.resolve();
@@ -149,6 +152,7 @@ export function AdminOperationalReports() {
       <div className={styles.filters}>
         <form onSubmit={search}><label><Search size={15}/><input onChange={(event) => setQueryInput(event.target.value)} placeholder="Medicine, manufacturer, store, rider or order" value={queryInput}/></label><button type="submit">Search</button></form>
         <label><span>Store ID</span><input min="1" onChange={(event) => setVendorId(event.target.value)} placeholder="All stores" type="number" value={vendorId}/></label>
+        {report !== "expenses" && <label><span>Branch ID</span><input min="1" onChange={(event) => setBranchId(event.target.value)} placeholder="All branches" type="number" value={branchId}/></label>}
         {report !== "stock" && <><label><span>From</span><input onChange={(event) => setDateFrom(event.target.value)} type="date" value={dateFrom}/></label><label><span>To</span><input onChange={(event) => setDateTo(event.target.value)} type="date" value={dateTo}/></label></>}
         {(report === "stock" || report === "sales") && <label><span>Group by</span><select onChange={(event) => setGroupBy(event.target.value)} value={groupBy}><option value="medicine">Medicine</option>{report === "stock" ? <option value="manufacturer">Manufacturer</option> : <option value="date">Date</option>}</select></label>}
         {report === "expenses" && <label><span>Group by</span><select onChange={(event) => setGroupBy(event.target.value)} value={groupBy}><option value="date">Date</option><option value="head">Expense head</option><option value="store">Store</option><option value="entry">Entry</option></select></label>}

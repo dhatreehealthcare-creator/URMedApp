@@ -53,7 +53,7 @@ test("vendor order APIs authenticate first and scope every order read to the res
   assert.match(queueRoute, /basePredicates = \["o\.vendor_id = \?", "o\.order_type = 'online'"\]/);
   assert.match(queueRoute, /\.bind\(\.\.\.baseBindings/);
   assert.match(detailRoute, /requireVendorPermission\(request, "sale\.write"\)/);
-  assert.match(detailRoute, /WHERE o\.id = \? AND o\.vendor_id = \? AND o\.order_type = 'online'/);
+  assert.match(detailRoute, /WHERE o\.id = \? AND o\.vendor_id = \? AND \(\? IS NULL OR o\.branch_id = \?\) AND o\.order_type = 'online'/);
   assert.match(detailRoute, /WHERE item\.order_id = \? AND scoped_order\.vendor_id = \?/);
   assert.match(detailRoute, /WHERE event\.order_id = \? AND scoped_order\.vendor_id = \?/);
   assert.match(detailRoute, /prescription\.id = \? AND prescription\.vendor_id = \?/);

@@ -79,9 +79,13 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { profile, vendorId } = await requireVendorPermission(request, "purchase.write");
+    const { profile, vendorId, branchId: staffBranchId } = await requireVendorPermission(request, "purchase.write");
     const body = await request.json() as Record<string, unknown>;
     const workflow = body.workflow === "draft" ? "draft" : "immediate_receipt";
+    const requestedBranchId = body.branchId === undefined ? null : asPositiveInteger(body.branchId, "Branch", 1000000000);
+    if (staffBranchId !== null && requestedBranchId !== null && requestedBranchId !== staffBranchId) {
+      return Response.json({ error: "Your staff access is limited to another pharmacy branch" }, { status: 403 });
+    }
     const supplierId = asPositiveInteger(body.supplierId, "Supplier", 1000000000);
     const invoiceNumber = clean(body.invoiceNumber, 100).toUpperCase();
     const invoiceDate = isoDate(body.invoiceDate, "Invoice date")!;
@@ -91,6 +95,11 @@ export async function POST(request: Request) {
     if (invoiceDate > today) return Response.json({ error: "Invoice date cannot be in the future" }, { status: 400 });
     if (rawItems.length < 1 || rawItems.length > 30) return Response.json({ error: "A purchase must contain between 1 and 30 product rows" }, { status: 400 });
     const db = getD1();
+    const branch = await db.prepare(`SELECT id FROM pharmacy_branches
+      WHERE vendor_id = ? AND status = 'active' AND (id = ? OR (? IS NULL AND is_primary = 1)) LIMIT 1`)
+      .bind(vendorId, staffBranchId ?? requestedBranchId, staffBranchId ?? requestedBranchId).first<{ id: number }>();
+    if (!branch) return Response.json({ error: "Choose an active pharmacy branch belonging to this pharmacy" }, { status: 400 });
+    const branchId = branch.id;
     const supplier = await db.prepare("SELECT id, business_name AS businessName FROM suppliers WHERE id = ? AND vendor_id = ? AND status = 'active' LIMIT 1").bind(supplierId, vendorId).first<{ id: number; businessName: string }>();
     if (!supplier) return Response.json({ error: "Choose an active supplier belonging to this pharmacy" }, { status: 400 });
     const duplicate = await db.prepare(`SELECT id FROM purchase_orders
@@ -117,8 +126,8 @@ export async function POST(request: Request) {
       if (expiryDate <= invoiceDate || expiryDate <= today) return Response.json({ error: `${rowLabel}: expired stock cannot be received` }, { status: 400 });
       if (manufacturingDate && manufacturingDate > invoiceDate) return Response.json({ error: `${rowLabel}: manufacturing date cannot be after the invoice date` }, { status: 400 });
       const existingBatch = await db.prepare(`SELECT expiry_date AS expiryDate, manufacturing_date AS manufacturingDate
-        FROM pharmacy_inventory WHERE vendor_id = ? AND product_id = ? AND batch_number = ? LIMIT 1`)
-        .bind(vendorId, product.id, batchNumber)
+        FROM pharmacy_inventory WHERE vendor_id = ? AND branch_id = ? AND product_id = ? AND batch_number = ? LIMIT 1`)
+        .bind(vendorId, branchId, product.id, batchNumber)
         .first<{ expiryDate: string | null; manufacturingDate: string | null }>();
       if (existingBatch && hasConflictingPurchaseBatch(existingBatch, { expiryDate, manufacturingDate })) {
         return Response.json({ error: `${rowLabel}: this product and batch already exists with different manufacturing or expiry dates` }, { status: 409 });
@@ -145,10 +154,10 @@ export async function POST(request: Request) {
     const totalPaise = subtotalPaise + taxPaise;
     const purchaseNumber = `PO-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
     const statements: D1PreparedStatement[] = [
-      db.prepare(`INSERT INTO purchase_orders (purchase_number, vendor_id, supplier_id, invoice_number, invoice_date,
+      db.prepare(`INSERT INTO purchase_orders (purchase_number, vendor_id, branch_id, supplier_id, invoice_number, invoice_date,
         subtotal_paise, tax_paise, total_paise, payment_status, status, created_by_profile_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', 'draft', ?)`)
-        .bind(purchaseNumber, vendorId, supplierId, invoiceNumber, invoiceDate, subtotalPaise, taxPaise, totalPaise, profile.id),
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', 'draft', ?)`)
+        .bind(purchaseNumber, vendorId, branchId, supplierId, invoiceNumber, invoiceDate, subtotalPaise, taxPaise, totalPaise, profile.id),
     ];
     for (const item of items) {
       statements.push(db.prepare(`INSERT INTO purchase_order_items (purchase_order_id, product_id, inventory_id, batch_number,

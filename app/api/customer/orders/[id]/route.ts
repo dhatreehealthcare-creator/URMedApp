@@ -46,14 +46,14 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         item.sgst_paise AS sgstPaise,item.igst_paise AS igstPaise,item.line_total_paise AS lineTotalPaise,
         product.prescription_required AS prescriptionRequired,
         (SELECT current.id FROM pharmacy_inventory current
-          WHERE current.vendor_id=scoped_order.vendor_id AND current.product_id=item.product_id
+          WHERE current.vendor_id=scoped_order.vendor_id AND current.branch_id=scoped_order.branch_id AND current.product_id=item.product_id
             AND current.active=1 AND current.quarantine_status='available'
             AND current.expiry_date IS NOT NULL AND date(current.expiry_date)>=date('now')
             AND current.cold_chain_status IN ('not_applicable','within_range')
             AND (current.quantity-current.reserved_quantity)>0
           ORDER BY date(current.expiry_date),current.id LIMIT 1) AS reorderInventoryId,
         (SELECT current.quantity-current.reserved_quantity FROM pharmacy_inventory current
-          WHERE current.vendor_id=scoped_order.vendor_id AND current.product_id=item.product_id
+          WHERE current.vendor_id=scoped_order.vendor_id AND current.branch_id=scoped_order.branch_id AND current.product_id=item.product_id
             AND current.active=1 AND current.quarantine_status='available'
             AND current.expiry_date IS NOT NULL AND date(current.expiry_date)>=date('now')
             AND current.cold_chain_status IN ('not_applicable','within_range')
