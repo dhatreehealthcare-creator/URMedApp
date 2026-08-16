@@ -36,6 +36,7 @@ type SupplierReturnItem = {
   purchasedQuantity: number;
   supplierId: number;
   currentQuantity: number;
+  availableQuantity: number;
   returnedQuantity: number;
 };
 
@@ -79,6 +80,7 @@ export async function completeSupplierReturn(input: SupplierReturnInput) {
     item.purchase_price_paise AS purchasePricePaise,
     item.received_quantity+item.received_free_quantity AS purchasedQuantity,
     po.supplier_id AS supplierId,i.quantity AS currentQuantity,
+    i.quantity-i.reserved_quantity AS availableQuantity,
     COALESCE((SELECT SUM(ri.quantity) FROM supplier_return_items ri JOIN supplier_returns r ON r.id=ri.supplier_return_id
       WHERE ri.purchase_order_item_id=item.id AND r.status<>'cancelled'),0) AS returnedQuantity
     FROM purchase_order_items item JOIN purchase_orders po ON po.id=item.purchase_order_id
@@ -91,7 +93,7 @@ export async function completeSupplierReturn(input: SupplierReturnInput) {
   try {
     validateSupplierReturn({
       quantity,
-      currentQuantity: item.currentQuantity,
+      currentQuantity: item.availableQuantity,
       purchasedQuantity: item.purchasedQuantity,
       returnedQuantity: item.returnedQuantity,
     });
@@ -108,7 +110,8 @@ export async function completeSupplierReturn(input: SupplierReturnInput) {
       db.prepare(`INSERT INTO supplier_returns (return_number,vendor_id,supplier_id,purchase_order_id,debit_note_number,reason,total_paise,status,created_by_profile_id) VALUES (?,?,?,?,?,?,?,'completed',?)`).bind(returnNumber,vendorId,item.supplierId,item.purchaseOrderId,debitNoteNumber,reason,totalPaise,actorProfileId),
       db.prepare(`INSERT INTO supplier_return_items (supplier_return_id,purchase_order_item_id,inventory_id,quantity,amount_paise,disposition)
         SELECT id,?,?,?,?,'returned_to_supplier' FROM supplier_returns WHERE return_number=?`).bind(purchaseOrderItemId,item.inventoryId,quantity,totalPaise,returnNumber),
-      db.prepare(`UPDATE pharmacy_inventory SET quantity=quantity-?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND vendor_id=? AND quantity>=?`).bind(quantity,item.inventoryId,vendorId,quantity),
+      db.prepare(`UPDATE pharmacy_inventory SET quantity=quantity-?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND vendor_id=? AND (quantity-reserved_quantity)>=?`).bind(quantity,item.inventoryId,vendorId,quantity),
       db.prepare(`INSERT INTO stock_ledger (vendor_id,inventory_id,movement_type,quantity_delta,balance_after,reference_type,reference_id,reason,actor_profile_id)
         SELECT ?,?,'supplier_return',-?,i.quantity,'supplier_return',r.id,?,? FROM pharmacy_inventory i JOIN supplier_returns r ON r.return_number=? WHERE i.id=?`).bind(vendorId,item.inventoryId,quantity,reason,actorProfileId,returnNumber,item.inventoryId),
       db.prepare(`INSERT INTO ledger_entries (vendor_id,account_code,entry_date,description,debit_paise,credit_paise,reference_type,reference_id,created_by_profile_id)

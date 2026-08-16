@@ -89,6 +89,7 @@ function createFixture(t) {
       vendor_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL,
       quantity INTEGER NOT NULL,
+      reserved_quantity INTEGER DEFAULT 0 NOT NULL,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
     );
     CREATE TABLE purchase_order_items (
@@ -192,14 +193,15 @@ function seedPurchase(sqlite, {
   quantity = 5,
   freeQuantity = 0,
   currentQuantity = 10,
+  reservedQuantity = 0,
 } = {}) {
   sqlite.prepare("INSERT OR IGNORE INTO suppliers (id,vendor_id,business_name) VALUES (?,?,?)")
     .run(supplierId, vendorId, `Supplier ${vendorId}`);
   sqlite.prepare("INSERT OR IGNORE INTO products (id,name) VALUES (1,'Regression Medicine')").run();
   sqlite.prepare("INSERT INTO purchase_orders (id,purchase_number,vendor_id,supplier_id,invoice_date,status) VALUES (?,?,?,?,?,?)")
     .run(purchaseOrderId, `PO-${purchaseOrderId}`, vendorId, supplierId, "2026-08-01", status);
-  sqlite.prepare("INSERT INTO pharmacy_inventory (id,vendor_id,product_id,quantity) VALUES (?,?,1,?)")
-    .run(inventoryId, vendorId, currentQuantity);
+  sqlite.prepare("INSERT INTO pharmacy_inventory (id,vendor_id,product_id,quantity,reserved_quantity) VALUES (?,?,1,?,?)")
+    .run(inventoryId, vendorId, currentQuantity, reservedQuantity);
   sqlite.prepare(`INSERT INTO purchase_order_items
     (id,purchase_order_id,product_id,inventory_id,batch_number,quantity,free_quantity,
       received_quantity,received_free_quantity,purchase_price_paise)
@@ -281,6 +283,24 @@ test("supplier returns reject quantities above current or originally received st
     reason: "Damaged shipment",
   }), 409, /current batch stock/);
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM supplier_returns").get().count, 0);
+});
+
+test("supplier returns cannot consume reserved stock", async (t) => {
+  const { db, sqlite } = createFixture(t);
+  const { purchaseOrderItemId, inventoryId } = seedPurchase(sqlite, { quantity: 5, currentQuantity: 10, reservedQuantity: 8 });
+
+  await expectLifecycleError(completeSupplierReturn({
+    db,
+    vendorId: 1,
+    actorProfileId: 11,
+    purchaseOrderItemId,
+    quantity: 3,
+    reason: "Reserved stock protection",
+  }), 409, /current batch stock/);
+  assert.deepEqual({
+    quantity: sqlite.prepare("SELECT quantity FROM pharmacy_inventory WHERE id=?").get(inventoryId).quantity,
+    returns: sqlite.prepare("SELECT COUNT(*) AS count FROM supplier_returns").get().count,
+  }, { quantity: 10, returns: 0 });
 });
 
 test("a vendor cannot return another vendor's received purchase", async (t) => {

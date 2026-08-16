@@ -4,6 +4,7 @@ import { errorResponse, requireLocalProfile } from "../../../lib/auth-server";
 import { effectiveRefillStatus, validateRefillDate } from "../../../lib/refill-engine";
 import { releaseExpiredReservations } from "../../../lib/inventory-reservations";
 import { effectivePriceFallbackSql } from "../../../lib/effective-pricing";
+import { privateJson } from "../../../lib/http-response";
 
 type RefillRow = {
   id: number; medicineName: string; originalQuantity: number; daysSupply: number; dueDate: string;
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
         date(COALESCE(r.snoozed_until, r.due_date)), r.id DESC
       LIMIT 100
     `).bind(profile.id).all<RefillRow>();
-    return Response.json({ reminders: rows.results.map((row) => ({ ...row, effectiveStatus: effectiveRefillStatus(row) })) });
+    return privateJson({ reminders: rows.results.map((row) => ({ ...row, effectiveStatus: effectiveRefillStatus(row) })) });
   } catch (error) {
     return errorResponse(error);
   }
@@ -56,13 +57,13 @@ export async function POST(request: Request) {
     const id = Number(body.id);
     const action = String(body.action ?? "");
     if (!Number.isInteger(id) || id < 1 || !["confirm", "snooze", "cancel"].includes(action)) {
-      return Response.json({ error: "Refill reminder action is invalid" }, { status: 400 });
+      return privateJson({ error: "Refill reminder action is invalid" }, { status: 400 });
     }
     const db = getD1();
     const existing = await db.prepare(`SELECT id, vendor_id AS vendorId, status FROM refill_reminders
       WHERE id = ? AND customer_profile_id = ? LIMIT 1`).bind(id, profile.id).first<{ id: number; vendorId: number; status: string }>();
-    if (!existing) return Response.json({ error: "Refill reminder not found" }, { status: 404 });
-    if (["completed", "cancelled"].includes(existing.status)) return Response.json({ error: "This reminder is already closed" }, { status: 409 });
+    if (!existing) return privateJson({ error: "Refill reminder not found" }, { status: 404 });
+    if (["completed", "cancelled"].includes(existing.status)) return privateJson({ error: "This reminder is already closed" }, { status: 409 });
 
     if (action === "cancel") {
       await db.prepare(`UPDATE refill_reminders SET status = 'cancelled', snoozed_until = NULL,
@@ -74,15 +75,15 @@ export async function POST(request: Request) {
     } else {
       const dueDate = validateRefillDate(body.date);
       const daysSupply = Number(body.daysSupply);
-      if (!Number.isInteger(daysSupply) || daysSupply < 1 || daysSupply > 365) return Response.json({ error: "Days supply must be between 1 and 365" }, { status: 400 });
+      if (!Number.isInteger(daysSupply) || daysSupply < 1 || daysSupply > 365) return privateJson({ error: "Days supply must be between 1 and 365" }, { status: 400 });
       await db.prepare(`UPDATE refill_reminders SET status = 'active', due_date = ?, days_supply = ?,
         schedule_source = 'customer_confirmed', snoozed_until = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND customer_profile_id = ?`).bind(dueDate, daysSupply, id, profile.id).run();
     }
     await appendAuditEvent({ vendorId: existing.vendorId, actorProfileId: profile.id, action: `refill.${action}`, entityType: "refill_reminder", entityId: id, after: { date: body.date ?? null, daysSupply: body.daysSupply ?? null }, requestId: request.headers.get("cf-ray") ?? "" });
-    return Response.json({ updated: true });
+    return privateJson({ updated: true });
   } catch (error) {
-    if (error instanceof Error && /reminder date|one year/i.test(error.message)) return Response.json({ error: error.message }, { status: 400 });
+    if (error instanceof Error && /reminder date|one year/i.test(error.message)) return privateJson({ error: error.message }, { status: 400 });
     return errorResponse(error);
   }
 }

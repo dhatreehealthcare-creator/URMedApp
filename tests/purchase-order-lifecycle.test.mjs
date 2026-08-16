@@ -65,7 +65,8 @@ function fixture(t) {
       batch_number TEXT NOT NULL, expiry_date TEXT NOT NULL, manufacturing_date TEXT,
       dosage TEXT DEFAULT '' NOT NULL, purchase_price_paise INTEGER NOT NULL,
       sale_price_paise INTEGER NOT NULL, mrp_paise INTEGER NOT NULL, quantity INTEGER NOT NULL,
-      gst_percent INTEGER NOT NULL, quarantine_status TEXT NOT NULL, active INTEGER NOT NULL,
+      reserved_quantity INTEGER DEFAULT 0 NOT NULL, gst_percent INTEGER NOT NULL,
+      quarantine_status TEXT NOT NULL, active INTEGER NOT NULL,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
       UNIQUE(vendor_id, product_id, batch_number)
     );

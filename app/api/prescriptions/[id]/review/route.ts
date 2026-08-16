@@ -4,6 +4,7 @@ import { errorResponse } from "../../../../../lib/auth-server";
 import { prepareOrderReservationReleaseStatements } from "../../../../../lib/inventory-reservations";
 import { prepareTransactionalEmailEnqueueStatement } from "../../../../../lib/transactional-email-outbox";
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
+import { privateJson } from "../../../../../lib/http-response";
 
 type MedicineInput = { medicineText?: unknown; dosageText?: unknown; durationText?: unknown; quantityApproved?: unknown };
 
@@ -19,22 +20,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const decision = text(body.decision, 40);
     const notes = text(body.notes, 1000);
     if (!Number.isInteger(prescriptionId) || prescriptionId < 1 || !["approved", "rejected", "clarification_required"].includes(decision)) {
-      return Response.json({ error: "Prescription review decision is invalid" }, { status: 400 });
+      return privateJson({ error: "Prescription review decision is invalid" }, { status: 400 });
     }
-    if (decision !== "approved" && notes.length < 5) return Response.json({ error: "Add a clear reason for rejection or clarification" }, { status: 400 });
+    if (decision !== "approved" && notes.length < 5) return privateJson({ error: "Add a clear reason for rejection or clarification" }, { status: 400 });
     const db = getD1();
     const pharmacist = await db.prepare(`SELECT id, full_name AS fullName FROM pharmacists
       WHERE vendor_id = ? AND profile_id = ? AND active = 1 AND verification_status = 'verified'
         AND (valid_until IS NULL OR valid_until >= date('now')) LIMIT 1`)
       .bind(vendorId, profile.id).first<{ id: number; fullName: string }>();
-    if (!pharmacist) return Response.json({ error: "A currently verified pharmacist profile is required to review prescriptions" }, { status: 403 });
+    if (!pharmacist) return privateJson({ error: "A currently verified pharmacist profile is required to review prescriptions" }, { status: 403 });
     const prescription = await db.prepare(`SELECT p.id, p.status, p.customer_profile_id AS customerProfileId,
       p.prescription_number AS prescriptionNumber
       FROM prescriptions p
       WHERE p.id = ? AND p.vendor_id = ? LIMIT 1`).bind(prescriptionId, vendorId)
       .first<{ id: number; status: string; customerProfileId: number; prescriptionNumber: string }>();
-    if (!prescription) return Response.json({ error: "Prescription not found" }, { status: 404 });
-    if (prescription.status !== "uploaded") return Response.json({ error: "Only a newly uploaded or resubmitted prescription can be reviewed" }, { status: 409 });
+    if (!prescription) return privateJson({ error: "Prescription not found" }, { status: 404 });
+    if (prescription.status !== "uploaded") return privateJson({ error: "Only a newly uploaded or resubmitted prescription can be reviewed" }, { status: 409 });
 
     const medicineInputs = Array.isArray(body.items) ? body.items.slice(0, 20) as MedicineInput[] : [];
     const medicines = medicineInputs.map((item) => ({
@@ -42,7 +43,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       durationText: text(item.durationText, 120), quantityApproved: item.quantityApproved === "" || item.quantityApproved == null ? null : Number(item.quantityApproved),
     })).filter((item) => item.medicineText);
     if (medicines.some((item) => item.quantityApproved !== null && (!Number.isInteger(item.quantityApproved) || item.quantityApproved < 0 || item.quantityApproved > 1000))) {
-      return Response.json({ error: "Approved medicine quantity is invalid" }, { status: 400 });
+      return privateJson({ error: "Approved medicine quantity is invalid" }, { status: 400 });
     }
 
     const statements = [
@@ -116,12 +117,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       await db.batch(statements);
     } catch (error) {
       if (/prescription_already_reviewed/i.test(error instanceof Error ? error.message : "")) {
-        return Response.json({ error: "This prescription was already reviewed. Refresh the queue." }, { status: 409 });
+        return privateJson({ error: "This prescription was already reviewed. Refresh the queue." }, { status: 409 });
       }
       throw error;
     }
     await appendAuditEvent({ vendorId, actorProfileId: profile.id, action: `prescription.${decision}`, entityType: "prescription", entityId: prescriptionId, after: { decision, notes, medicines, pharmacistId: pharmacist.id }, requestId: request.headers.get("cf-ray") ?? "" });
-    return Response.json({ reviewed: true, decision, pharmacist: pharmacist.fullName });
+    return privateJson({ reviewed: true, decision, pharmacist: pharmacist.fullName });
   } catch (error) {
     return errorResponse(error);
   }

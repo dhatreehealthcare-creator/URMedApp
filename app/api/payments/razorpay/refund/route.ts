@@ -11,6 +11,7 @@ import { createRazorpayRefund, RazorpayProviderError } from "../../../../../lib/
 import { requireVendorPermission } from "../../../../../lib/vendor-access";
 import { enforceRateLimit } from "../../../../../lib/abuse-controls";
 import { safeRecordOperationalEvent } from "../../../../../lib/operational-monitoring";
+import { privateJson } from "../../../../../lib/http-response";
 
 export async function POST(request: Request) {
   try {
@@ -20,7 +21,7 @@ export async function POST(request: Request) {
     const body = await request.json() as Record<string, unknown>;
     const orderId = Number(body.orderId);
     const reason = String(body.reason ?? "").trim();
-    if (!Number.isInteger(orderId)) return Response.json({ error: "Order is invalid" }, { status: 400 });
+    if (!Number.isInteger(orderId)) return privateJson({ error: "Order is invalid" }, { status: 400 });
 
     const db = getD1();
     const order = await db.prepare(`SELECT id,vendor_id AS vendorId,customer_profile_id AS customerProfileId
@@ -28,7 +29,7 @@ export async function POST(request: Request) {
       .first<{ id: number; vendorId: number; customerProfileId: number }>();
     const permitted = order && (profile.role === "admin" || order.customerProfileId === profile.id
       || (profile.role === "vendor" && order.vendorId === profile.vendorId));
-    if (!permitted) return Response.json({ error: "Order not found" }, { status: 404 });
+    if (!permitted) return privateJson({ error: "Order not found" }, { status: 404 });
     if (profile.role === "vendor") await requireVendorPermission(request, "sale.write");
 
     const refund = await beginFullOrderRefund({
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
       }, db);
     }
     if (refund.status === "processed") {
-      return Response.json({ refund: { id: refund.id, status: refund.status, amountPaise: refund.amountPaise }, duplicate: true });
+      return privateJson({ refund: { id: refund.id, status: refund.status, amountPaise: refund.amountPaise }, duplicate: true });
     }
 
     try {
@@ -83,7 +84,7 @@ export async function POST(request: Request) {
           requestId: request.headers.get("cf-ray") ?? "",
         }, db);
       }
-      return Response.json({
+      return privateJson({
         refund: { id: refund.id, providerRefundId: providerRefund.id, status: reconciled.status, amountPaise: refund.amountPaise },
         duplicate: refund.duplicate && !reconciled.changed,
       }, { status: reconciled.status === "pending" ? 202 : 200 });
@@ -109,10 +110,10 @@ export async function POST(request: Request) {
         reason: error.message,
         requestId: request.headers.get("cf-ray") ?? "",
       }, db);
-      return Response.json({ error: error.message, refund: { id: refund.id, status: "failed", amountPaise: refund.amountPaise } }, { status: error.status });
+      return privateJson({ error: error.message, refund: { id: refund.id, status: "failed", amountPaise: refund.amountPaise } }, { status: error.status });
     }
   } catch (error) {
-    if (error instanceof PaymentLifecycleError) return Response.json({ error: error.message }, { status: error.status });
+    if (error instanceof PaymentLifecycleError) return privateJson({ error: error.message }, { status: error.status });
     return errorResponse(error);
   }
 }
